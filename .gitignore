@@ -1,0 +1,21 @@
+# Virtual environments
+.venv-v2/
+venv-v3/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Data & results (large files, not tracked)
+data/
+results/
+
+# Claude Code
+.claude/
+
+# Jupyter
+.ipynb_checkpoints/
