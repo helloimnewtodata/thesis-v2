@@ -13,6 +13,7 @@ __pycache__/
 # Data & results (large files, not tracked)
 data/
 results/
+src/1_data_fetch/pe_pcf_fixed.csv
 
 # Claude Code
 .claude/
