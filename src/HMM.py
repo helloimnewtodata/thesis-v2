@@ -62,7 +62,7 @@ from matplotlib import pyplot as plt
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "data" / "01_raw" / "outputs"
 MONTHLY_OUTPUT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead.csv"
 MONTHLY_ML_OUTPUT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_ml.csv"

@@ -190,7 +190,8 @@ def main():
 
     # 7. NaN-raportti
     feature_cols = [
-        "E/P", "1/P/B", "-P/S", "-P/CF", "DivYield_12M",
+        "E/P", "E/P_legacy", "P/E", "P/E_legacy", "1/P/B",
+        "-P/S", "-P/CF", "-P/CF_op", "-P/CF_ps", "DivYield_12M",
         "Return On Average Common Equity %", "Gross Profit / Total Assets", "-Debt/MktCap",
         "MOM_1M", "MOM_12M", "RSI_30d", "Hurst",
         "-Vol_30d", "-Beta_252d", "-IdioVol",

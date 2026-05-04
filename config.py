@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 DISPLAY_START_DATE = "2010-01-01"
 END_DATE = "2025-12-31"
 
-WARMUP_CALENDAR_DAYS = 450
+WARMUP_CALENDAR_DAYS = 600
 FETCH_START_DATE = (
     datetime.strptime(DISPLAY_START_DATE, "%Y-%m-%d")
     - timedelta(days=WARMUP_CALENDAR_DAYS)
@@ -59,9 +59,15 @@ MOM_1M_WINDOW = 21   # ~1 kuukausi kaupankäyntipäiviä
 MOM_12M_WINDOW = 252  # ~12 kuukautta kaupankäyntipäiviä
 MOM_12M_SKIP = 21     # skip viimeisin kuukausi (t-1)
 
-# GICS-sektoridummyt
-SECTOR_DUMMIES = ["Consumer Discretionary", "Industrials", "Information Technology", "Health Care"]
-SECTOR_DUMMY_NAMES = ["Cnsmr", "Manuf", "HiTec", "Hlth"]
+# DEPRECATED — vanhat 4 binäärisen FF-tyylisen GICS-sektoridummyn arvot.
+# Korvattu Sector_Group-aggregaatiolla (GICS 11 → 6 eurooppalaiselle universumille).
+# Säilytetty tyhjinä listoina, jotta vanhat callerit (main.py, main_test.py,
+# updated_main_test.py) saavat importin läpi. compute_sector_dummies on no-op.
+# Vanhat arvot:
+# SECTOR_DUMMIES = ["Consumer Discretionary", "Industrials", "Information Technology", "Health Care"]
+# SECTOR_DUMMY_NAMES = ["Cnsmr", "Manuf", "HiTec", "Hlth"]
+SECTOR_DUMMIES = []
+SECTOR_DUMMY_NAMES = []
 
 # Walk-forward ikkunat
 TRAIN_END = "2016-12-31"

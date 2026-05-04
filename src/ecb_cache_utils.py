@@ -8,7 +8,7 @@ from urllib.request import urlopen
 import pandas as pd
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "data" / "01_raw" / "outputs"
 ECB_CACHE_DIR = OUTPUT_DIR / "ecb_cache"
 ECB_AAA_CACHE_PATH = ECB_CACHE_DIR / "ecb_aaa_10y.csv"
@@ -136,7 +136,7 @@ def get_ecb_series(
             print(f"ECB download epaonnistui, kaytetaan paikallista cachea: {exc}")
             return cached_aaa, cached_all
 
-        helper_script = ROOT / "src" / "1_data_fetch" / "fetch_ecb_cache.py"
+        helper_script = ROOT / "src" / "fetch_ecb_cache.py"
         raise RuntimeError(
             "ECB-datan lataus epaonnistui eika paikallista cachea loytynyt. "
             f"Aja ensin {helper_script} tai tallenna tiedostot polkuihin "

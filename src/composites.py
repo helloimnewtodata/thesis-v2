@@ -10,11 +10,17 @@ from sklearn.preprocessing import StandardScaler
 
 
 # Ryhmädefinitiot: feature-sarakkeen nimi → ryhmä
-VALUATION_FEATURES = ["E/P", "1/P/B", "-P/S", "-P/CF", "DivYield_12M"]
+VALUATION_FEATURES = ["E/P", "1/P/B", "-P/S", "-P/CF", "DivYield_12M"] # Pitää synkata uudelleen
 QUALITY_FEATURES = ["Return On Average Common Equity %", "Gross Profit / Total Assets", "-Debt/MktCap"]
-MOMENTUM_FEATURES = ["MOM_1M", "MOM_12M", "RSI_30d", "Hurst", "Stock_vs_Sector"]
+MOMENTUM_FEATURES = ["MOM_1M", "MOM_12M", "RSI_30d", "Hurst", "Stock_vs_Sector_12M_1M", "Stock_vs_Sector_1M"]
 RISK_FEATURES = ["-Vol_30d", "-Beta_252d", "-IdioVol"]
-MARKET_FEATURES = ["Z_Calculated PE Ratio", "Z_Calculated Price to Book", "Z_Calculated Index Dividend Yield"]
+MARKET_FEATURES = [
+    "Calculated PE Ratio",
+    "Calculated Price to Book",
+    "Calculated Index Dividend Yield",
+    "Index_MOM_1M",
+    "Index_MOM_12M",
+]
 
 
 def cross_sectional_zscore(df, features, date_col="Date"):
