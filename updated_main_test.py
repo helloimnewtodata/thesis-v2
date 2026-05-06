@@ -1,14 +1,14 @@
 """
-Updated smoke run for the current feature pipeline.
+Full master run for the current feature pipeline.
 
-This combines the small random-universe workflow from main_test.py with the
-monthly master construction from main.py:
-    - random STOXX 600 sample
+This combines the Refinitiv refresh workflow with the monthly master
+construction from main.py:
+    - full survivor_universe.csv by default
     - refreshed stock/index/EURIBOR/quarterly EPS fetches
-    - updated valuation features, including legacy comparison columns
+    - updated valuation features, with master P/E and P/CF limited to fallback columns
     - Hurst merge via main.build_master_dataframe
     - HMM merge via data/01_raw/outputs/hmm_regimes_monthly_no_lookahead_ml.csv
-    - final output: data/02_preprocessed/updated_smoke.csv
+    - final output: data/02_preprocessed/MASTER_DF_1.csv
 
 Run:
     python updated_main_test.py
@@ -25,24 +25,26 @@ import refinitiv.data as rd
 import main as main_pipeline
 import src.data_fetch as data_fetch
 from config import (
+    CHUNK_SIZE as DEFAULT_CHUNK_SIZE,
     DISPLAY_START_DATE,
-    END_DATE,
     FETCH_START_DATE,
     SECTOR_DUMMIES,
     SECTOR_DUMMY_NAMES,
+    SLEEP_BETWEEN_CHUNKS as DEFAULT_SLEEP_BETWEEN_CHUNKS,
 )
 from main import HMM_ML_PATH
 from src.features import compute_all_features
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-SURVIVOR_UNIVERSE_PATH = PROJECT_ROOT / "data" / "stoxx600_survivor_universe.csv"
+SURVIVOR_UNIVERSE_PATH = PROJECT_ROOT / "data" / "survivor_universe.csv"
 RAW_OUTPUT_DIR = PROJECT_ROOT / "data" / "01_raw"
 PREPROCESSED_OUTPUT_DIR = PROJECT_ROOT / "data" / "02_preprocessed"
-UPDATED_SMOKE_OUTPUT = PREPROCESSED_OUTPUT_DIR / "updated_smoke_KONGO.csv"
+UPDATED_SMOKE_OUTPUT = PREPROCESSED_OUTPUT_DIR / "MASTER_DF_1.csv"
 
-SMOKE_UNIVERSE_SIZE = 10
+SMOKE_UNIVERSE_SIZE = None
 WARMUP_CALENDAR_DAYS = 600
+DEFAULT_END_DATE = "2026-04-30"
 
 
 def default_fetch_start(display_start):
@@ -54,19 +56,24 @@ def default_fetch_start(display_start):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sample-size", type=int, default=SMOKE_UNIVERSE_SIZE)
+    parser.add_argument(
+        "--sample-size",
+        type=int,
+        default=SMOKE_UNIVERSE_SIZE,
+        help="Number of random RICs to use. Omit or pass 0 to use the full universe.",
+    )
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed.")
     parser.add_argument("--display-start", default=DISPLAY_START_DATE)
-    parser.add_argument("--fetch-start", default=None, help="Defaults to display-start minus 450 days.")
-    parser.add_argument("--end", default=END_DATE)
+    parser.add_argument("--fetch-start", default=None, help="Defaults to display-start minus 600 days.")
+    parser.add_argument("--end", default=DEFAULT_END_DATE)
     parser.add_argument("--output", default=str(UPDATED_SMOKE_OUTPUT))
     parser.add_argument(
         "--universe-path",
         default=str(SURVIVOR_UNIVERSE_PATH),
         help="CSV with a RIC column. Defaults to the STOXX 600 survivor universe.",
     )
-    parser.add_argument("--chunk-size", type=int, default=10)
-    parser.add_argument("--sleep-between-chunks", type=float, default=3.0)
+    parser.add_argument("--chunk-size", type=int, default=min(DEFAULT_CHUNK_SIZE, 10))
+    parser.add_argument("--sleep-between-chunks", type=float, default=DEFAULT_SLEEP_BETWEEN_CHUNKS)
     return parser.parse_args()
 
 
@@ -150,6 +157,8 @@ def load_universe(path):
 def pick_random_universe(snapshot, size, seed=None):
     """Same random-sample logic as main_test.py: no fixed seed by default."""
     rics = snapshot["RIC"].dropna().unique().tolist()
+    if size is None or size <= 0:
+        return rics
     if seed is not None:
         random.seed(seed)
     if len(rics) <= size:
@@ -168,6 +177,98 @@ def nan_report(df, feature_cols):
         pct = (n_nan / n * 100) if n > 0 else 0
         report.append((col, n_nan, f"{pct:.1f}%"))
     return report
+
+
+MASTER_COLUMN_ORDER = [
+    # 1. Tunnisteet
+    "Instrument", "Date",
+
+    # 2. Raakakentät
+    "Price Close", "Daily Total Return", "Volume",
+    "Company Market Cap", "Outstanding Shares", "Total Debt",
+    "Cash Flow",
+    "Net Cash Flow from Operating Activities",
+    "Cash Flow from Operations per Share",
+    "Earnings Per Share - Actual",
+    "Earnings Per Share Reported - Actual",
+    "EBITDA - Actual",
+    "Shareholders Equity - Common",
+    "Dividend Per Share - Actual",
+    "Dividend Per Share Yield % (Actual)",
+    "Return on Average Common Equity - %",
+    "Price To Sales Per Share (Daily Time Series Ratio)",
+    "Price To Book Value Per Share (Daily Time Series Ratio)",
+    "Price to Book Value per Share",
+    "Price To Cash Flow Per Share (Daily Time Series Ratio)",
+    "GICS Sector Name", "Sector_Group",
+
+    # 3. Valuation — E/P-perhe
+    "E/P_ff",
+
+    # 4. Valuation — P/CF-perhe
+    "-P/CF_ff",
+
+    # 5. Muu valuation
+    "1/P/B", "-P/S", "DivYield_12M",
+
+    # 6. Quality
+    "BookToMarket", "OperatingProfitability", "-Debt/MktCap",
+
+    # 7. Momentum
+    "MOM_1M", "MOM_12M",
+    "Stock_vs_Sector_1M", "Stock_vs_Sector_12M_1M",
+    "RSI_30d", "Hurst", "Hurst_Raw_DFA",
+
+    # 8. Risk
+    "Vol_30d", "-Vol_30d",
+    "Beta_252d", "-Beta_252d",
+    "-IdioVol",
+
+    # 9. Standalone / target
+    "log_MktCap", "Daily_Return", "Rf_daily", "Excess_Return",
+]
+
+
+PE_COLUMNS_TO_DROP = [
+    "P/E",
+    "E/P",
+    "P/E_ff",
+    "E/P_legacy",
+    "P/E_legacy",
+    "EPS_TTM_legacy",
+    "TTM_EPSfr",
+    "TTM_NetIncome",
+    "TTM_EPS_from_NI",
+]
+
+PCF_COLUMNS_TO_DROP = [
+    "-P/CF_legacy",
+    "-P/CF_op_LTM",
+    "-P/CF_opps_LTM",
+    "P/CF_refinitiv",
+    "-P/CF_refinitiv",
+    "TTM_NetCashFlowOp",
+    "TTM_NetCFOpPerShr",
+    "-P/CF_op_TTM",
+    "-P/CF_opps_TTM",
+]
+
+METADATA_COLUMNS_TO_DROP = [
+    "StockSourceDate",
+]
+
+
+def drop_extra_valuation_columns(df):
+    """Keep only the valuation columns intended for this smoke/master export."""
+    columns_to_drop = PE_COLUMNS_TO_DROP + PCF_COLUMNS_TO_DROP + METADATA_COLUMNS_TO_DROP
+    return df.drop(columns=[c for c in columns_to_drop if c in df.columns])
+
+
+def reorder_master_columns(df, order=MASTER_COLUMN_ORDER):
+    """Reorder columns to MASTER_COLUMN_ORDER; unlisted columns appended at end."""
+    listed = [c for c in order if c in df.columns]
+    rest = [c for c in df.columns if c not in listed]
+    return df[listed + rest]
 
 
 def print_nan_report(df, feature_cols, title):
@@ -197,7 +298,7 @@ def main():
 
     print(f"Warmup-fetch: {fetch_start} -> {args.end}")
     print(f"Master-paneelin näkyvä alku: {args.display_start}")
-    print(f"Sample size: {args.sample_size}")
+    print(f"Sample size: {'ALL' if args.sample_size is None or args.sample_size <= 0 else args.sample_size}")
     print(f"Chunk size: {args.chunk_size}")
     print(f"Sleep between chunks: {args.sleep_between_chunks}s")
     print(f"Universe source: {args.universe_path}")
@@ -224,6 +325,9 @@ def main():
         print("Haetaan kvartaalitason EPS/NI fallback-data...")
         df_quarterly_eps = data_fetch.fetch_quarterly_eps_for_pe(universe)
 
+        print("Haetaan kvartaalitason P/CF fallback-data...")
+        df_quarterly_pcf = data_fetch.fetch_quarterly_pcf_for_pcf(universe)
+
         print("Haetaan indeksidata...")
         df_index, df_index_fundamentals = data_fetch.fetch_index_data()
 
@@ -238,6 +342,7 @@ def main():
         {
             "stocks": df_stocks,
             "quarterly_eps": df_quarterly_eps,
+            "quarterly_pcf": df_quarterly_pcf,
             "index": df_index,
             "index_fundamentals": df_index_fundamentals,
             "euribor": df_euribor,
@@ -250,6 +355,7 @@ def main():
 
     print_summary("df_stocks (raw)", df_stocks)
     print_summary("df_quarterly_eps (raw)", df_quarterly_eps)
+    print_summary("df_quarterly_pcf (raw)", df_quarterly_pcf)
 
     print("\n" + "=" * 80)
     print("Lasketaan päivätason featuret...")
@@ -262,21 +368,15 @@ def main():
         SECTOR_DUMMIES,
         SECTOR_DUMMY_NAMES,
         df_quarterly_eps=df_quarterly_eps,
+        df_quarterly_pcf=df_quarterly_pcf,
     )
+    df_features = drop_extra_valuation_columns(df_features)
 
     daily_feature_cols = [
-        "E/P",
-        "E/P_legacy",
         "E/P_ff",
-        "P/E",
-        "P/E_legacy",
-        "P/E_ff",
         "1/P/B",
         "-P/S",
-        "-P/CF",
-        "-P/CF_op",
-        "-P/CF_ps",
-        "-P/CF_refinitiv",
+        "-P/CF_ff",
         "DivYield_12M",
         "OperatingProfitability",
         "BookToMarket",
@@ -299,6 +399,8 @@ def main():
     print("Rakennetaan kuukausitason master + Hurst + HMM...")
     print("=" * 80)
     df_master = main_pipeline.build_master_dataframe(df_features, df_idx, hmm_path=HMM_ML_PATH)
+    df_master = drop_extra_valuation_columns(df_master)
+    df_master = reorder_master_columns(df_master)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df_master.to_csv(output_path, index=False)

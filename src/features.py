@@ -166,36 +166,97 @@ def compute_neg_pcf(df):
     """
     df = df.sort_values(["Instrument", "Date"])
     df["Cash Flow"] = df.groupby("Instrument")["Cash Flow"].ffill()
-    df["-P/CF"] = -(df["Company Market Cap"] / df["Cash Flow"])
+    df["-P/CF_legacy"] = -(df["Company Market Cap"] / df["Cash Flow"])
     return df
 
 
 def compute_pcf_op(df):
     """
-    P/CF Operating Cash Flow -varianteilla (PCF_test2.ipynb).
+    Tuotannon -P/CF Operating Cash Flow LTM:llä — kaksi rinnakkaista varianttia.
 
-    Lasketaan kaksi rinnakkaista varianttia ja niiden -käänteiset:
-        P/CF_op  = Market Cap / Net Cash Flow from Operating Activities (LTM)
-        P/CF_ps  = Price       / Cash Flow from Operations per Share     (LTM)
-        -P/CF_op = -P/CF_op
-        -P/CF_ps = -P/CF_ps
+    -P/CF_op_LTM   = -(Market Cap / Net Cash Flow from Operating Activities (LTM))
+    -P/CF_opps_LTM = -(Price       / Cash Flow from Operations per Share     (LTM))
+
+    Vertailussa REF_PCF_daily:hin (pcf_compare_to_ref.py):
+      - op_LTM:   median rel diff −0.15%, 32% riveistä <1% poikkeamalla
+      - opps_LTM: median rel diff −2.59%, Spearman 0.940 (op:n 0.927)
+    Molemmat säilytetään tuotantosarakkeina; valinta tehdään mallin tasolla.
 
     Lähdekentät (data_fetch.py: TR.F.NetCashFlowOp(Period=LTM) ja
-    TR.F.NetCFOpPerShr(Period=LTM)) ovat LTM-arvoja Refinitivin omalla
-    rolling 4Q -laskennalla → ei tarvitse omaa ffill-logiikkaa toisin
-    kuin vanha TR.F.CF-pohjainen toteutus. Levitys päivätasolle Refinitivin
-    palauttamana toistuvana päiväarvona.
+    TR.F.NetCFOpPerShr(Period=LTM)) ovat LTM-arvoja Refinitivin rolling 4Q
+    -laskennalla → ei tarvitse omaa ffill-logiikkaa.
 
     HUOM: jos Operating CF < 0 (tappiolliset firmat), P/CF on negatiivinen
-    ja -P/CF positiivinen. Sama outlier-käyttäytyminen kuin legacy -P/CF:llä.
+    ja -P/CF positiivinen.
     """
     opcf_col = "Net Cash Flow from Operating Activities"
     opcfps_col = "Cash Flow from Operations per Share"
 
-    df["P/CF_op"] = df["Company Market Cap"] / df[opcf_col]
-    df["P/CF_ps"] = df["Price Close"] / df[opcfps_col]
-    df["-P/CF_op"] = -df["P/CF_op"]
-    df["-P/CF_ps"] = -df["P/CF_ps"]
+    df["-P/CF_op_LTM"] = -(df["Company Market Cap"] / df[opcf_col])
+    df["-P/CF_opps_LTM"] = -(df["Price Close"] / df[opcfps_col])
+    return df
+
+
+def compute_pcf_ttm_fallback(df, df_quarterly_pcf):
+    """
+    -P/CF_ff fallback-ketjulla:
+        1. Refinitivin LTM operating CF: -P/CF_op_LTM
+        2. → oma 4Q rolling TTM operating CF kvartaalisarjasta
+        3. → oma 4Q rolling TTM operating CF per share kvartaalisarjasta
+
+    df_quarterly_pcf: long-format DataFrame ['Instrument', 'QDate',
+    'NetCashFlowOp_Q', 'NetCFOpPerShr_Q'] (data_fetch.fetch_quarterly_pcf_for_pcf).
+
+    Levitys päivätasolle merge_asof(direction="backward") per osake →
+    ei look-ahead biasia. Legacy TR.F.CF -pohjaista -P/CF:ää ei käytetä
+    fallbackina, koska se on eri cash flow -määritelmä.
+    """
+    q = df_quarterly_pcf.sort_values(["Instrument", "QDate"]).copy()
+    q["TTM_NetCashFlowOp"] = (
+        q.groupby("Instrument")["NetCashFlowOp_Q"]
+        .rolling(4, min_periods=4)
+        .sum()
+        .reset_index(level=0, drop=True)
+    )
+    q["TTM_NetCFOpPerShr"] = (
+        q.groupby("Instrument")["NetCFOpPerShr_Q"]
+        .rolling(4, min_periods=4)
+        .sum()
+        .reset_index(level=0, drop=True)
+    )
+
+    df = df.sort_values(["Instrument", "Date"])
+    parts = []
+    for instrument, group in df.groupby("Instrument", group_keys=False):
+        q_slice = (
+            q.loc[
+                q["Instrument"] == instrument,
+                ["QDate", "TTM_NetCashFlowOp", "TTM_NetCFOpPerShr"],
+            ]
+            .rename(columns={"QDate": "Date"})
+            .sort_values("Date")
+        )
+        if q_slice.empty:
+            group = group.copy()
+            group["TTM_NetCashFlowOp"] = np.nan
+            group["TTM_NetCFOpPerShr"] = np.nan
+        else:
+            group = pd.merge_asof(
+                group.sort_values("Date"),
+                q_slice,
+                on="Date",
+                direction="backward",
+            )
+        parts.append(group)
+    df = pd.concat(parts, ignore_index=True)
+
+    df["-P/CF_op_TTM"] = -(df["Company Market Cap"] / df["TTM_NetCashFlowOp"])
+    df["-P/CF_opps_TTM"] = -(df["Price Close"] / df["TTM_NetCFOpPerShr"])
+    df["-P/CF_ff"] = (
+        df["-P/CF_op_LTM"]
+        .combine_first(df["-P/CF_op_TTM"])
+        .combine_first(df["-P/CF_opps_TTM"])
+    )
     return df
 
 
@@ -808,6 +869,7 @@ def compute_all_features(
     sectors,
     sector_names,
     df_quarterly_eps=None,
+    df_quarterly_pcf=None,
 ):
     """
     Laskee kaikki featuret yhdellä kutsulla.
@@ -815,6 +877,10 @@ def compute_all_features(
     df_quarterly_eps: long-format DataFrame compute_pe_ttm_fallback:ia varten
     (data_fetch.fetch_quarterly_eps_for_pe). Jos None, P/E_ff ja E/P_ff jäävät
     laskematta — vain LTM-pohjainen P/E ja E/P tulevat masteriin.
+
+    df_quarterly_pcf: long-format DataFrame compute_pcf_ttm_fallback:ia varten
+    (data_fetch.fetch_quarterly_pcf_for_pcf). Jos None, -P/CF_ff jää
+    laskematta — vain LTM-pohjaiset operating CF -variantit tulevat masteriin.
     """
 
     df = df_stocks.copy()
@@ -828,6 +894,8 @@ def compute_all_features(
     df = compute_neg_ps(df)
     df = compute_neg_pcf(df)                 # Legacy -P/CF vertailuun (TR.F.CF)
     df = compute_pcf_op(df)                  # P/CF_op, P/CF_ps + käänteiset
+    if df_quarterly_pcf is not None:
+        df = compute_pcf_ttm_fallback(df, df_quarterly_pcf)  # -P/CF_ff
     df = compute_pcf_refinitiv(df)           # P/CF_refinitiv (REF_PCF, TR.PriceToCFPerShare)
     df = compute_dividend_yield_trailing(df)
 

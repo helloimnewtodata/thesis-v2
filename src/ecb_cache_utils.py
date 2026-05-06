@@ -49,7 +49,15 @@ def load_cached_ecb_series(
     df = df.set_index("Date").sort_index()
 
     if start_date is not None and end_date is not None:
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
         df = df.loc[pd.Timestamp(start_date):pd.Timestamp(end_date)].copy()
+        if df.empty or (df.index.min() - start_ts).days > 7 or (end_ts - df.index.max()).days > 7:
+            print(
+                f"ECB cache ei kata pyydettya valia {start_date} -> {end_date}: "
+                f"{cache_path}"
+            )
+            return None
 
     print(f"Loaded ECB cache: {cache_path} ({len(df)} riviä)")
     return df

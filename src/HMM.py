@@ -69,8 +69,8 @@ MONTHLY_ML_OUTPUT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_ml.csv"
 FEATURE_PLOT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_features.png"
 PROBABILITY_PLOT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_probabilities.png"
 
-START_DATE = os.getenv("START_DATE", "2010-01-01")
-END_DATE = os.getenv("END_DATE", "2026-03-05")
+START_DATE = os.getenv("START_DATE", "2006-01-01")
+END_DATE = os.getenv("END_DATE", "2026-04-30")
 N_COMPONENTS = int(os.getenv("N_COMPONENTS", "3"))
 MIN_TRAIN_OBS = int(os.getenv("MIN_TRAIN_OBS", "756"))
 HMM_MAX_ITER = int(os.getenv("HMM_MAX_ITER", "500"))

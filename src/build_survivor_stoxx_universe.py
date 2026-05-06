@@ -1,5 +1,5 @@
 """
-Survivor-universumi STOXX Europe 600:lle — point-in-time -metodologialla.
+Survivor-universumi STOXX Europe 600
 
 Logiikka (taso 3):
     1. Hae snapshot-jäsenlista start_date:lle (RIC:t jotka olivat indeksissä t=start).
@@ -13,11 +13,7 @@ Logiikka (taso 3):
 
 HUOM survivorship biasista:
     Tämä menetelmä rajaa otoksen tarkoituksellisesti vain jatkuvasti indeksissä
-    olleisiin osakkeisiin → vinouttaa tuottoja ylöspäin (delistautuneet ja
-    indeksistä pudonneet jäävät pois). Käytä vain robustness-testeissä tai
-    tutkimusasetelmissa jotka vaativat tasapainoisen paneelin koko aikaväliltä.
-    Tuotantotason tutkimuksessa point-in-time-paneeli (kuukausittain rebalansoitu
-    indeksijäsenyys) on metodologisesti oikeampi.
+    olleisiin osakkeisiin
 """
 
 from pathlib import Path
@@ -30,7 +26,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 INDEX_RIC = ".STOXX"
 DEFAULT_START_DATE = "2010-01-01"
 DEFAULT_END_DATE = "2026-01-01"
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "stoxx600_survivor_universe.csv"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "data" / "survivor_universe.csv"
+
+# Data availability check: stock must have price data by this date
+# so that the 252-day warmup windows are fully filled before 2010-01-01
+DATA_CHECK_DATE = "2009-01-01"
+DATA_CHECK_CHUNK = 50
 
 
 def _fetch_snapshot_rics(snapshot_date):
@@ -114,12 +115,12 @@ def fetch_index_change_events(start_date, end_date, index_ric=INDEX_RIC):
 def filter_continuous_members(start_snapshot, events, start_date, end_date):
     """
     Palauttaa setin RIC:eistä jotka olivat indeksissä jatkuvasti
-    [start_date, end_date] välillä — eli olivat snapshotissa eikä yhtään
-    Leaver-tapahtumaa osu väliin (start_date, end_date].
+    [start_date, end_date] välillä.
 
-    Jos osake palasi indeksiin myöhemmin saman ikkunan sisällä, se EI silti
-    täytä kriteeriä, koska aukko (out-of-index) tarkoittaa että osakkeen tuottoja
-    ei voi käyttää indeksin jäsenenä koko ikkunan aikana.
+    Poistetaan:
+      - Leavers: osakkeet jotka poistuivat indeksistä ikkunan aikana.
+      - Joiners: osakkeet jotka liittyivät indeksiin ikkunan aikana
+        (ne eivät olleet indeksissä start_date:nä).
     """
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
@@ -127,6 +128,7 @@ def filter_continuous_members(start_snapshot, events, start_date, end_date):
     in_window = events[
         (events["ChangeDate"] > start_dt) & (events["ChangeDate"] <= end_dt)
     ]
+
     leavers_in_window = set(
         in_window.loc[
             in_window["ChangeType"].str.contains("leav", case=False, na=False),
@@ -134,7 +136,45 @@ def filter_continuous_members(start_snapshot, events, start_date, end_date):
         ]
     )
 
-    return start_snapshot - leavers_in_window
+    # Stocks that joined after start_date were not in the index from the beginning
+    joiners_in_window = set(
+        in_window.loc[
+            in_window["ChangeType"].str.contains("join", case=False, na=False),
+            "RIC",
+        ]
+    )
+
+    return start_snapshot - leavers_in_window - joiners_in_window
+
+
+def filter_by_data_availability(rics, check_date=DATA_CHECK_DATE):
+    """
+    Keeps only RICs that have price data on or before check_date.
+    Fetches in chunks of DATA_CHECK_CHUNK to avoid API limits.
+    """
+    ric_list = sorted(rics)
+    print(f"Checking data availability at {check_date} for {len(ric_list)} RICs...")
+
+    has_data = set()
+    for i in range(0, len(ric_list), DATA_CHECK_CHUNK):
+        chunk = ric_list[i:i + DATA_CHECK_CHUNK]
+        df = rd.get_data(
+            universe=chunk,
+            fields=["TR.PriceClose"],
+            parameters={"SDate": check_date, "EDate": check_date, "Frq": "D", "Curn": "EUR"},
+        )
+        available = (
+            df.dropna(subset=["Price Close"])["Instrument"]
+            .astype(str)
+            .str.strip()
+            .unique()
+        )
+        has_data.update(available)
+        print(f"  Chunk {i // DATA_CHECK_CHUNK + 1}: {len(available)}/{len(chunk)} have data")
+
+    removed = rics - has_data
+    print(f"Removed {len(removed)} RICs with no data at {check_date} — {len(has_data)} remaining")
+    return has_data
 
 
 def fetch_survivor_universe(
@@ -149,6 +189,7 @@ def fetch_survivor_universe(
     start_snapshot = _fetch_snapshot_rics(start_date)
     events = fetch_index_change_events(start_date, end_date, index_ric=index_ric)
     survivors = filter_continuous_members(start_snapshot, events, start_date, end_date)
+    survivors = filter_by_data_availability(survivors)
 
     survivors_df = pd.DataFrame({"RIC": sorted(survivors)})
 
@@ -181,6 +222,13 @@ def save_survivor_universe(
 
 
 def main():
+    if DEFAULT_OUTPUT_PATH.exists():
+        survivors = pd.read_csv(DEFAULT_OUTPUT_PATH)
+        print(f"Loaded from cache ({DEFAULT_OUTPUT_PATH}): {len(survivors)} RICs — skipping API calls.")
+        for ric in survivors["RIC"]:
+            print(f"  {ric}")
+        return
+
     rd.open_session()
     try:
         survivors, output_path, diag = save_survivor_universe()

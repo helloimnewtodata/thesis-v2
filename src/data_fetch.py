@@ -37,15 +37,13 @@ def _fetch_in_chunks(
     if chunk_size is None:
         chunk_size = CHUNK_SIZE
 
-    results = []
-    for i in range(0, len(universe), chunk_size):
-        chunk_universe = universe[i:i + chunk_size]
+    def _fetch_one_chunk(chunk_universe, label):
         df = None
+        last_exc = None
         for attempt in range(1, max_retries + 1):
             try:
                 print(
-                    f"Refinitiv chunk {i // chunk_size + 1}/"
-                    f"{(len(universe) + chunk_size - 1) // chunk_size}: "
+                    f"Refinitiv chunk {label}: "
                     f"{len(chunk_universe)} instruments, attempt {attempt}/{max_retries}"
                 )
                 df = rd.get_data(
@@ -54,14 +52,37 @@ def _fetch_in_chunks(
                     parameters=params,
                 )
                 break
-            except Exception:
+            except Exception as exc:
+                last_exc = exc
                 if attempt == max_retries:
-                    raise
+                    break
                 wait = retry_sleep * attempt
                 print(f"Chunk failed; retrying in {wait}s...")
                 time.sleep(wait)
-        if df is None:
-            raise RuntimeError("Refinitiv chunk failed without returning data.")
+
+        if df is not None:
+            return df
+
+        if len(chunk_universe) <= 1:
+            raise last_exc
+
+        mid = len(chunk_universe) // 2
+        left = chunk_universe[:mid]
+        right = chunk_universe[mid:]
+        print(
+            f"Chunk {label} failed after {max_retries} attempts; "
+            f"splitting {len(chunk_universe)} instruments into {len(left)} + {len(right)}."
+        )
+        left_df = _fetch_one_chunk(left, f"{label}.1")
+        time.sleep(SLEEP_BETWEEN_CHUNKS)
+        right_df = _fetch_one_chunk(right, f"{label}.2")
+        return pd.concat([left_df, right_df], ignore_index=True)
+
+    results = []
+    for i in range(0, len(universe), chunk_size):
+        chunk_universe = universe[i:i + chunk_size]
+        label = f"{i // chunk_size + 1}/{(len(universe) + chunk_size - 1) // chunk_size}"
+        df = _fetch_one_chunk(chunk_universe, label)
         results.append(df)
         if i + chunk_size < len(universe):
             time.sleep(SLEEP_BETWEEN_CHUNKS)
@@ -224,6 +245,58 @@ def fetch_quarterly_eps_for_pe(universe):
 
     df = (
         df_eps.merge(df_ni, on=["Instrument", "QDate"], how="outer")
+        .dropna(subset=["QDate"])
+        .sort_values(["Instrument", "QDate"])
+        .reset_index(drop=True)
+    )
+    return df
+
+
+def fetch_quarterly_pcf_for_pcf(universe):
+    """
+    Hakee kvartaalitason operating cash flow -sarjat P/CF fallback-ketjua varten.
+
+    Palauttaa long-format DataFramen sarakkeilla
+        ['Instrument', 'QDate', 'NetCashFlowOp_Q', 'NetCFOpPerShr_Q'].
+
+    Kvartaalihaku kattaa saman aikavälin kuin daily-haku
+    (FETCH_START_DATE → END_DATE), jotta features.py voi laskea 4Q rolling
+    TTM:n koko paneelin yli ja levittää sen päivätasolle ilman look-aheadia.
+    """
+    quarterly_params = {
+        "SDate": PARAMS_DAILY["SDate"],
+        "EDate": PARAMS_DAILY["EDate"],
+        "Frq": "FQ",
+        "Curn": "EUR",
+    }
+
+    df_op = _fetch_in_chunks(
+        universe,
+        ["TR.F.NetCashFlowOp.periodenddate", "TR.F.NetCashFlowOp"],
+        quarterly_params,
+    )
+    df_opps = _fetch_in_chunks(
+        universe,
+        ["TR.F.NetCFOpPerShr.periodenddate", "TR.F.NetCFOpPerShr"],
+        quarterly_params,
+    )
+
+    df_op = df_op.rename(columns={
+        "Period End Date": "QDate",
+        "Net Cash Flow from Operating Activities": "NetCashFlowOp_Q",
+    })
+    df_opps = df_opps.rename(columns={
+        "Period End Date": "QDate",
+        "Cash Flow from Operations per Share": "NetCFOpPerShr_Q",
+    })
+
+    df_op["QDate"] = pd.to_datetime(df_op["QDate"], errors="coerce")
+    df_opps["QDate"] = pd.to_datetime(df_opps["QDate"], errors="coerce")
+    df_op["NetCashFlowOp_Q"] = pd.to_numeric(df_op["NetCashFlowOp_Q"], errors="coerce")
+    df_opps["NetCFOpPerShr_Q"] = pd.to_numeric(df_opps["NetCFOpPerShr_Q"], errors="coerce")
+
+    df = (
+        df_op.merge(df_opps, on=["Instrument", "QDate"], how="outer")
         .dropna(subset=["QDate"])
         .sort_values(["Instrument", "QDate"])
         .reset_index(drop=True)
