@@ -24,6 +24,7 @@ scipy<1.13.0
 refinitiv-data==1.6.2
 scikit-learn>=1.1.0
 xgboost>=1.7.0
+lightgbm>=4.0.0
 statsmodels>=0.13.0
 matplotlib>=3.6.0
 seaborn>=0.12.0
