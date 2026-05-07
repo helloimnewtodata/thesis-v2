@@ -379,6 +379,7 @@ def compute_book_to_market(df):
 # "Return On Average Common Equity %" ja "Gross Profit / Total Assets" ???
 
 # Operating Profitablity
+# Operating Profitablity
 def compute_operating_profitability(df):
     """
     Compute Operating Profitability = EBITDA(t) / Common Shareholders' Equity(t-1).
@@ -392,19 +393,38 @@ def compute_operating_profitability(df):
     profitable firms, biasing the cross-sectional ranking that the factor is
     meant to capture.
 
-    Refinitiv fields:
-        EBITDA: TR.EBITDAActValue ("EBITDA - Actual")
-        Equity: TR.F.ShHoldEqCom ("Shareholders Equity - Common")
+    EBITDA construction (with fallback for coverage):
+        Primary:  TR.EBITDAActValue ("EBITDA - Actual")  — I/B/E/S adjusted
+        Fallback: TR.F.EBITDA ("Earnings before Interest Taxes Depreciation & Amortization") — fundamentals pipeline
 
-    Both fields are reported annually. On the daily panel, each annual value
-    is forward-filled within firm for up to 252 trading days (one fiscal year)
-    to populate non-reporting days. The cap prevents stale values from
-    propagating beyond a fiscal year for firms that have stopped reporting.
+    The primary source uses I/B/E/S analyst-normalized EBITDA, which provides
+    consistent treatment of one-time items across firms. Where the primary
+    is unavailable (typically smaller firms or earlier periods with weaker
+    analyst coverage), the function falls back to the fundamentals-pipeline
+    EBITDA computed from reported line items. The two definitions differ in
+    their treatment of one-offs but capture the same economic concept; the
+    fallback applies to a minority of observations and meaningfully improves
+    coverage in the European universe.
+
+    Equity field:
+        TR.F.ShHoldEqCom ("Shareholders Equity - Common")
+
+    Both EBITDA sources and the equity field are reported annually. On the
+    daily panel, each annual value is forward-filled within firm for up to
+    252 trading days (one fiscal year) to populate non-reporting days. The
+    cap prevents stale values from propagating beyond a fiscal year for
+    firms that have stopped reporting.
 
     The fiscal-year lag is implemented as shift(252) on the daily panel.
     Each annual value occupies ~252 consecutive trading-day rows after the
     forward-fill, so a 252-day shift moves the denominator back exactly one
     fiscal year (numerator from FY t, denominator from FY t-1).
+
+    Negative common equity (rare, but occurs after large writedowns or
+    accumulated losses) is treated as missing rather than allowed to flip
+    the sign of OP. A negative-equity firm with positive EBITDA would
+    otherwise produce a negative OP, which is not meaningful as a
+    profitability signal.
 
     References:
         Fama, E. F., & French, K. R. (2015). A five-factor asset pricing
@@ -413,17 +433,28 @@ def compute_operating_profitability(df):
     # Sort required before any groupby().shift(); wrong order produces incorrect lag values.
     df = df.sort_values(["Instrument", "Date"])
 
-    # Annual EBITDA forward-filled across non-reporting trading days; capped at one fiscal year.
-    df["EBITDA - Actual"] = df.groupby("Instrument")["EBITDA - Actual"].ffill(limit=252)
+    # EBITDA with fallback: use the I/B/E/S adjusted value where populated,
+    # fall back to the fundamentals-pipeline EBITDA where the primary is NaN.
+    primary_ebitda = df.get("EBITDA - Actual", pd.Series(np.nan, index=df.index))
+    fallback_ebitda = df.get(
+        "Earnings before Interest Taxes Depreciation & Amortization",
+        df.get("EBITDA", pd.Series(np.nan, index=df.index)),
+    )
+    ebitda_combined = primary_ebitda.where(primary_ebitda.notna(), fallback_ebitda)
+
+    # Forward-fill the combined EBITDA across non-reporting days, capped at one fiscal year.
+    ebitda_filled = ebitda_combined.groupby(df["Instrument"]).ffill(limit=252)
 
     # Same forward-fill logic for equity, capped at one fiscal year.
-    df["Shareholders Equity - Common"] = df.groupby("Instrument")["Shareholders Equity - Common"].ffill(limit=252)
+    equity_filled = df.groupby("Instrument")["Shareholders Equity - Common"].ffill(limit=252)
 
     # shift(252) on the daily panel moves the denominator back one full fiscal year.
-    equity_lag = df.groupby("Instrument")["Shareholders Equity - Common"].shift(252).replace(0, float("nan"))
+    # Negative or zero equity → NaN. A negative denominator would flip the sign
+    # of OP, producing a meaningless signal. Affects ~1% of firm-day observations.
+    equity_lag = equity_filled.groupby(df["Instrument"]).shift(252)
+    equity_lag = equity_lag.where(equity_lag > 0)
 
-    # replace(0, nan) prevents division-by-zero infinities for firms with zero reported equity.
-    df["OperatingProfitability"] = df["EBITDA - Actual"] / equity_lag
+    df["OperatingProfitability"] = ebitda_filled / equity_lag
     return df
 
 
@@ -477,6 +508,24 @@ def compute_sector_group(df):
     df["Sector_Group"] = df["GICS Sector Name"].map(GICS_TO_SECTOR_GROUP)
     return df
 
+_SECTOR_DUMMY_GROUPS = [
+    "Financials",
+    "Industrials & Materials",
+    "Consumer",
+    "Health Care",
+    "Technology & Communication",
+]
+
+def compute_sector_dummies(df, sectors=None, names=None):
+    """5 binääristä Sector_Group-dummyä; referenssiryhmä Real Assets & Utilities.
+
+    Parametrit sectors ja names hyväksytään yhteensopivuuden takia mutta
+    jätetään huomiotta — dummyt lasketaan aina _SECTOR_DUMMY_GROUPS-listasta.
+    """
+    for group in _SECTOR_DUMMY_GROUPS:
+        col = "Sector_" + group.replace(" & ", "_").replace(" ", "_")
+        df[col] = (df["Sector_Group"] == group).astype(int)
+    return df
 
 # Stock vs Sector Return Momentum: osakkeen momentum miinus saman Sector_Groupin
 # muiden osakkeiden equal-weighted leave-one-out -keskiarvo. Tuotetaan kaksi
@@ -550,6 +599,50 @@ def compute_daily_return(df):
 # RISK-ryhmä
 # ---------------------------------------------------------------------------
 
+def _prepare_market_returns(df_index):
+    idx = df_index.loc[df_index["Instrument"] == ".STOXXR"].copy()
+    idx["Date"] = pd.to_datetime(idx["Date"]).dt.normalize()
+    idx = (
+        idx.drop_duplicates(subset=["Date"], keep="last")
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+    idx["Index_Return"] = idx["Price Close"].pct_change()
+    return idx[["Date", "Index_Return"]]
+
+
+def _valid_stock_market_return_pairs(group, idx):
+    stock = group[["Date_dt", "Daily_Return"]].rename(columns={"Date_dt": "Date"})
+    paired = pd.merge(stock, idx, on="Date", how="inner")
+    return (
+        paired.dropna(subset=["Daily_Return", "Index_Return"])
+        .sort_values("Date")
+        .reset_index(drop=True)
+    )
+
+
+def _assign_latest_feature_to_stock_dates(group, feature_by_date, feature_col):
+    values = np.full(len(group), np.nan, dtype=float)
+    feature_by_date = feature_by_date.dropna(subset=[feature_col])
+    if feature_by_date.empty:
+        return values
+
+    left = pd.DataFrame({
+        "_pos": np.arange(len(group)),
+        "Date": pd.to_datetime(group["Date_dt"]).to_numpy(),
+    }).sort_values("Date")
+    right = feature_by_date[["Date", feature_col]].sort_values("Date")
+
+    matched = pd.merge_asof(
+        left,
+        right,
+        on="Date",
+        direction="backward",
+        tolerance=pd.Timedelta(days=7),
+    )
+    values[matched["_pos"].to_numpy()] = matched[feature_col].to_numpy()
+    return values
+
 def compute_volatility(df, window=30):
     """
     Annualisoitu volatiliteetti 30d — sama kuin RSI_AND_VOL_FINAL.ipynb:ssä.
@@ -563,34 +656,30 @@ def compute_volatility(df, window=30):
     df[f"-Vol_{window}d"] = -df[f"Vol_{window}d"]
     return df
 
-def compute_beta(df, df_index):
+def compute_beta(df, df_index, window=252):
     """
-    Rolling 252d Beta vs. .STOXXR — sama kuin RETURNS_AND_BETA_FINAL.ipynb:ssä.
-    """
-    # Indeksin päivätuotto
-    idx = df_index.loc[df_index["Instrument"] == ".STOXXR"].copy()
-    idx["Date"] = pd.to_datetime(idx["Date"]).dt.date
-    idx = idx.drop_duplicates(subset=["Date"], keep="last")
-    idx["Index_Return"] = idx["Price Close"].pct_change()
+    Rolling 252d Beta vs. .STOXXR.
 
-    df["Date_dt"] = pd.to_datetime(df["Date"]).dt.date
+    The window is counted on valid stock-market return pairs, not raw stock
+    rows. This avoids exchange-calendar mismatches turning an otherwise valid
+    252-observation estimate into NaN.
+    """
+    idx = _prepare_market_returns(df_index)
+
+    df["Date_dt"] = pd.to_datetime(df["Date"]).dt.normalize()
 
     def _beta(group):
-        # LEFT merge: säilytetään kaikki osakkeen rivit. Jos indeksillä ei
-        # ole dataa kyseiselle päivälle (pyhäpäiväepäsymmetria tms.), Index_Return
-        # jää NaN:ksi ja rolling cov/var tuottaa NaN Betan siihen kohtaan.
-        # Inner-merge rikkoi pituuden (merged < group) → ValueError
-        # "Length of values (X) does not match length of index (Y)".
-        merged = pd.merge(
-            group[["Date_dt", "Daily_Return"]].rename(columns={"Date_dt": "Date"}),
-            idx[["Date", "Index_Return"]],
-            on="Date",
-            how="left",
-        )
-        cov = merged["Daily_Return"].rolling(252).cov(merged["Index_Return"])
-        var = merged["Index_Return"].rolling(252).var()
+        paired = _valid_stock_market_return_pairs(group, idx)
+        cov = paired["Daily_Return"].rolling(window).cov(paired["Index_Return"])
+        var = paired["Index_Return"].rolling(window).var()
+        paired["Beta_252d"] = cov / var
+
         group = group.copy()
-        group["Beta_252d"] = (cov / var).values
+        group["Beta_252d"] = _assign_latest_feature_to_stock_dates(
+            group,
+            paired[["Date", "Beta_252d"]],
+            "Beta_252d",
+        )
         return group
 
     df = df.groupby("Instrument", group_keys=False).apply(_beta)
@@ -599,114 +688,6 @@ def compute_beta(df, df_index):
     return df
 
 
-# ---------------------------------------------------------------------------
-# SUORITUSKYKYVAROITUS — compute_idiosyncratic_vol
-# ---------------------------------------------------------------------------
-# Nykyinen toteutus on O(n * window) per osake (Python-for-loop joka sovittaa
-# OLS:n joka ikkunaan erikseen). 10 osaketta × 16 vuotta × window=252 on vielä
-# siedettävä smoke-ajossa, mutta 600 osakkeen × 16 vuoden paneelilla tämä on
-# mittaluokkaa minuutteja → kymmeniä minuutteja.
-#
-# Vektorointi on triviaali rolling-OLS -identiteetillä:
-#   Var(residual) = Var(y) - Cov(y, x)^2 / Var(x)
-#
-# Pandasin rolling.var / rolling.cov hoitaa koko ikkunasliden vektorisoidusti
-# O(n) ajassa per osake. Nopeusvaikutus: ~100–250× smoke-ajon yli.
-#
-# Lisäbonus: alkuperäisessä koodissa on ddof-epäjohdonmukaisuus
-# (np.cov → ddof=1, np.var → ddof=0), mikä biasoi betan kertoimella n/(n-1).
-# Vektoroidussa versiossa molemmat käyttävät pandasin ddof=1 → korjautuu
-# sivutuotteena.
-#
-# EHDOTETTU VEKTOROITU VERSIO (ota käyttöön ennen 600 osakkeen tuotantoajoa):
-#
-# def compute_idiosyncratic_vol(df, df_index, window=252):
-#     """Idiosynkraattinen volatiliteetti rolling-OLS -identiteetillä."""
-#     idx = df_index.loc[df_index["Instrument"] == ".STOXXR"].copy()
-#     idx["Date"] = pd.to_datetime(idx["Date"]).dt.date
-#     idx = idx.drop_duplicates(subset=["Date"], keep="last")
-#     idx["Index_Return"] = idx["Price Close"].pct_change()
-#
-#     df["Date_dt"] = pd.to_datetime(df["Date"]).dt.date
-#
-#     def _idio_vol(group):
-#         merged = pd.merge(
-#             group[["Date_dt", "Daily_Return"]].rename(columns={"Date_dt": "Date"}),
-#             idx[["Date", "Index_Return"]],
-#             on="Date",
-#             how="inner",
-#         )
-#         y = merged["Daily_Return"]
-#         x = merged["Index_Return"]
-#
-#         # Rolling-OLS-identiteetti (kaikki ddof=1):
-#         #   Var(resid) = Var(y) - Cov(y, x)^2 / Var(x)
-#         var_y  = y.rolling(window).var()
-#         var_x  = x.rolling(window).var()
-#         cov_yx = y.rolling(window).cov(x)
-#
-#         resid_var = var_y - (cov_yx ** 2) / var_x
-#         resid_var = resid_var.clip(lower=0)        # pyöristysvirhesuojaus
-#         idio_vol = np.sqrt(resid_var) * np.sqrt(252)
-#
-#         group = group.copy()
-#         group["-IdioVol"] = -idio_vol.values
-#         return group
-#
-#     df = df.groupby("Instrument", group_keys=False).apply(_idio_vol)
-#     df.drop(columns=["Date_dt"], inplace=True)
-#     return df
-# ---------------------------------------------------------------------------
-
-
-#### VANHA #### 
-# def compute_idiosyncratic_vol(df, df_index, window=252):
-#     """
-#     Idiosynkraattinen volatiliteetti: CAPM-regressiojäännösten keskihajonta.
-
-#     HUOM: hidas toteutus. Katso yllä oleva kommentti vektoroidusta versiosta.
-#     """
-#     idx = df_index.loc[df_index["Instrument"] == ".STOXXR"].copy()
-#     idx["Date"] = pd.to_datetime(idx["Date"]).dt.date
-#     idx = idx.drop_duplicates(subset=["Date"], keep="last")
-#     idx["Index_Return"] = idx["Price Close"].pct_change()
-
-#     df["Date_dt"] = pd.to_datetime(df["Date"]).dt.date
-
-#     def _idio_vol(group):
-#         # LEFT merge, katso compute_beta — sama pituusongelma muuten.
-#         merged = pd.merge(
-#             group[["Date_dt", "Daily_Return"]].rename(columns={"Date_dt": "Date"}),
-#             idx[["Date", "Index_Return"]],
-#             on="Date",
-#             how="left",
-#         )
-#         # Rolling CAPM residuaalit
-#         residuals = []
-#         for i in range(len(merged)):
-#             if i < window:
-#                 residuals.append(np.nan)
-#                 continue
-#             y = merged["Daily_Return"].iloc[i - window:i].values
-#             x = merged["Index_Return"].iloc[i - window:i].values
-#             if np.isnan(y).any() or np.isnan(x).any():
-#                 residuals.append(np.nan)
-#                 continue
-#             beta = np.cov(y, x)[0, 1] / np.var(x) if np.var(x) > 0 else 0
-#             alpha = np.mean(y) - beta * np.mean(x)
-#             resid = y - (alpha + beta * x)
-#             residuals.append(resid.std() * np.sqrt(252))
-
-#         group = group.copy()
-#         group["-IdioVol"] = [-r if r is not np.nan else np.nan for r in residuals]
-#         return group
-
-#     df = df.groupby("Instrument", group_keys=False).apply(_idio_vol)
-#     df.drop(columns=["Date_dt"], inplace=True)
-#     return df
-
-
-#### NIKLAKSEN UUSI VEKTOROITU VERSIO ####
 def compute_idiosyncratic_vol(df, df_index, window=252):
     """
     Idiosyncratic volatility: standard deviation of residuals from a rolling
@@ -724,25 +705,14 @@ def compute_idiosyncratic_vol(df, df_index, window=252):
     Returns the negative of the annualized idiosyncratic volatility,
     consistent with the sign convention used elsewhere in the feature panel.
     """
-    idx = df_index.loc[df_index["Instrument"] == ".STOXXR"].copy()
-    idx["Date"] = pd.to_datetime(idx["Date"]).dt.date
-    idx = idx.drop_duplicates(subset=["Date"], keep="last")
-    idx["Index_Return"] = idx["Price Close"].pct_change()
+    idx = _prepare_market_returns(df_index)
 
-    df["Date_dt"] = pd.to_datetime(df["Date"]).dt.date
+    df["Date_dt"] = pd.to_datetime(df["Date"]).dt.normalize()
 
     def _idio_vol(group):
-        # LEFT merge to preserve group length. Inner merge would drop rows where
-        # the index has no observation for that date, breaking the length match
-        # when assigning back to group.
-        merged = pd.merge(
-            group[["Date_dt", "Daily_Return"]].rename(columns={"Date_dt": "Date"}),
-            idx[["Date", "Index_Return"]],
-            on="Date",
-            how="left",
-        )
-        y = merged["Daily_Return"]
-        x = merged["Index_Return"]
+        paired = _valid_stock_market_return_pairs(group, idx)
+        y = paired["Daily_Return"]
+        x = paired["Index_Return"]
 
         # Rolling OLS residual variance via the algebraic identity.
         # All three statistics use pandas default ddof=1 (sample estimators).
@@ -755,9 +725,14 @@ def compute_idiosyncratic_vol(df, df_index, window=252):
         # when correlation is near 1; the OLS identity guarantees >= 0 in theory.
         resid_var = resid_var.clip(lower=0)
         idio_vol = np.sqrt(resid_var) * np.sqrt(252)
+        paired["-IdioVol"] = -idio_vol
 
         group = group.copy()
-        group["-IdioVol"] = -idio_vol.values
+        group["-IdioVol"] = _assign_latest_feature_to_stock_dates(
+            group,
+            paired[["Date", "-IdioVol"]],
+            "-IdioVol",
+        )
         return group
 
     df = df.groupby("Instrument", group_keys=False).apply(_idio_vol)
@@ -817,23 +792,6 @@ def compute_index_features(df_index_fundamentals):
 def compute_log_market_cap(df):
     """log(Market Cap) — Size."""
     df["log_MktCap"] = np.log(df["Company Market Cap"])
-    return df
-
-
-# DEPRECATED — vanha 4 binäärisen FF-tyylisen GICS-sektoridummyn laskenta.
-# Korvattu Sector_Group-aggregaatiolla (compute_sector_group, GICS 11 → 6).
-# Säilytetty kommentoituna historiallista referenssiä varten.
-# def compute_sector_dummies(df, sectors, names):
-#     """4 binääristä GICS-sektoridummya."""
-#     for sector, name in zip(sectors, names):
-#         df[f"Sector_{name}"] = (df["GICS Sector Name"] == sector).astype(int)
-#     return df
-
-
-def compute_sector_dummies(df, sectors, names):
-    """No-op shim — säilyttää allekirjoituksen, jotta vanhat kutsut
-    (main.py, main_test.py, updated_main_test.py) eivät kaadu. Sektoridummyt
-    on korvattu Sector_Group-sarakkeella; uusi pipeline käyttää sitä."""
     return df
 
 

@@ -175,6 +175,7 @@ def fetch_stock_fundamentals(universe):
         # Quality-ryhmän featuret
         "TR.F.ReturnAvgComEqPct",      # ROE
         "TR.EBITDAActValue",             # → EV/EBITDA (oma laskenta, MktCap / EBITDA, ffill)
+        "TR.F.EBITDA",                   # fallback → OperatingProfitability
         "TR.F.ShHoldEqCom",               # → Book-to-Market (oma laskenta, 1 / P/B, ffill)
         "TR.F.PriceToBookValuePerShr", # → P/B (oma laskenta, Price / (Book Value per Share), ffill)
         # PE_trial (PE_fix.ipynb) — Refinitivin omaa PE-lukua lähinnä osuva variantti
@@ -319,7 +320,7 @@ def fetch_stock_prices(universe):
     df = _coerce_numeric_columns(df)
 
     # Muunna Total Return desimaaliin (Refinitiv antaa prosentteina)
-    df["TR.TotalReturn1D"] = df["TR.TotalReturn1D"] / 100
+    df["Daily Total Return"] = df["Daily Total Return"] / 100
 
     return df
 

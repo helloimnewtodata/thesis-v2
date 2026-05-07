@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 DISPLAY_START_DATE = "2010-01-01"
 END_DATE = "2025-12-31"
 
-WARMUP_CALENDAR_DAYS = 600
+WARMUP_CALENDAR_DAYS = 750
 FETCH_START_DATE = (
     datetime.strptime(DISPLAY_START_DATE, "%Y-%m-%d")
     - timedelta(days=WARMUP_CALENDAR_DAYS)

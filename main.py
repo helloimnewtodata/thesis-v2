@@ -30,6 +30,15 @@ else:
 MASTER_OUTPUT_PATH = Path("data/02_preprocessed/master_features_monthly.csv")
 INDEX_OUTPUT_PATH = Path("data/02_preprocessed/df_index_features.csv")
 HMM_ML_PATH = Path("data/01_raw/outputs/hmm_regimes_monthly_no_lookahead_ml.csv")
+HMM_PROBABILITY_COLUMNS = [
+    "Date",
+    "Bull_Prob",
+    "Bear_Prob",
+    "Transition_Prob",
+    "Bull_Prob_MeanWindow",
+    "Bear_Prob_MeanWindow",
+    "Transition_Prob_MeanWindow",
+]
 
 
 def load_universe(path="data/stoxx600_universe.csv"):
@@ -107,7 +116,10 @@ def load_hmm_panel(path=HMM_ML_PATH):
 
     hmm = pd.read_csv(path)
     hmm["Date"] = pd.to_datetime(hmm["Date"])
-    return hmm
+    missing = [col for col in HMM_PROBABILITY_COLUMNS if col not in hmm.columns]
+    if missing:
+        raise ValueError(f"HMM probability -sarakkeet puuttuvat tiedostosta {path}: {missing}")
+    return hmm[HMM_PROBABILITY_COLUMNS].copy()
 
 
 def build_master_dataframe(df_features, df_idx, hmm_path=HMM_ML_PATH):

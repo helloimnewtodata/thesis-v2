@@ -43,7 +43,7 @@ PREPROCESSED_OUTPUT_DIR = PROJECT_ROOT / "data" / "02_preprocessed"
 UPDATED_SMOKE_OUTPUT = PREPROCESSED_OUTPUT_DIR / "MASTER_DF_1.csv"
 
 SMOKE_UNIVERSE_SIZE = None
-WARMUP_CALENDAR_DAYS = 600
+WARMUP_CALENDAR_DAYS = 750
 DEFAULT_END_DATE = "2026-04-30"
 
 
@@ -64,7 +64,7 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed.")
     parser.add_argument("--display-start", default=DISPLAY_START_DATE)
-    parser.add_argument("--fetch-start", default=None, help="Defaults to display-start minus 600 days.")
+    parser.add_argument("--fetch-start", default=None, help="Defaults to display-start minus 750 days.")
     parser.add_argument("--end", default=DEFAULT_END_DATE)
     parser.add_argument("--output", default=str(UPDATED_SMOKE_OUTPUT))
     parser.add_argument(
@@ -225,7 +225,22 @@ MASTER_COLUMN_ORDER = [
     "-IdioVol",
 
     # 9. Standalone / target
-    "log_MktCap", "Daily_Return", "Rf_daily", "Excess_Return",
+    "log_MktCap",
+    "Sector_Financials",
+    "Sector_Industrials_Materials",
+    "Sector_Consumer",
+    "Sector_Health_Care",
+    "Sector_Technology_Communication",
+    "Daily_Return", "Rf_daily", "Excess_Return",
+
+    # 10. HMM regime probabilities only (no state labels / training metadata)
+    "Bull_Prob",
+    "Bear_Prob",
+    "Transition_Prob",
+    "Bull_Prob_MeanWindow",
+    "Bear_Prob_MeanWindow",
+    "Transition_Prob_MeanWindow",
+
 ]
 
 
@@ -408,14 +423,12 @@ def main():
     master_feature_cols = daily_feature_cols + [
         "Hurst",
         "Hurst_Raw_DFA",
-        "HMM_Regime",
         "Bull_Prob",
         "Bear_Prob",
         "Transition_Prob",
         "Bull_Prob_MeanWindow",
         "Bear_Prob_MeanWindow",
         "Transition_Prob_MeanWindow",
-        "RegimeLabel",
     ]
     print_nan_report(df_master, master_feature_cols, "NaN-raportti updated_smoke masterista")
 

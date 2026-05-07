@@ -60,7 +60,20 @@ FEATURE_COLS = [
 ]
 
 # Appended automatically if present in the dataframe (produced by hurst.py / HMM.py).
-OPTIONAL_FEATURE_COLS = ["Hurst", "HMM_Regime"]
+OPTIONAL_FEATURE_COLS = [
+    "Hurst",
+    "Bull_Prob",
+    "Bear_Prob",
+    "Transition_Prob",
+    "Bull_Prob_MeanWindow",
+    "Bear_Prob_MeanWindow",
+    "Transition_Prob_MeanWindow",
+    "Sector_Financials",
+    "Sector_Industrials_Materials",
+    "Sector_Consumer",
+    "Sector_Health_Care",
+    "Sector_Technology_Communication",
+]
 
 TARGET_COL = "Excess_Return"
 TRAIN_START = "2010-01-01"
@@ -504,11 +517,10 @@ def run_walk_forward(
             print(f"\n  Skipping {name}: {exc}")
 
     # ── Phase 2: expanding OOS loop ────────────────────────────────────
-    oos_periods = (
+    oos_periods = sorted(
         df.loc[(df["Date"] >= oos_start) & (df["Date"] <= oos_end), "Date"]
         .dt.to_period("M")
         .unique()
-        .sort_values()
     )
 
     if verbose:
@@ -640,7 +652,7 @@ def evaluate_all(predictions_df):
 # Standalone entry point
 # ======================================================================
 
-MASTER_PATH     = Path("data/02_preprocessed/master_features_monthly.csv")
+MASTER_PATH     = Path("data/02_preprocessed/MASTER_DF_1.csv")
 PREDICTIONS_OUT = Path("results/predictions_oos.csv")
 METRICS_OUT     = Path("results/evaluation_metrics.csv")
 
@@ -658,9 +670,19 @@ def main(models=None, verbose=True):
     df = pd.read_csv(MASTER_PATH)
     df["Date"] = pd.to_datetime(df["Date"])
 
+    if "E/P_ff" not in df.columns and "P/E_ff" in df.columns:
+        df["E/P_ff"] = 1.0 / df["P/E_ff"]
+
     feature_cols = FEATURE_COLS + [c for c in OPTIONAL_FEATURE_COLS if c in df.columns]
 
     df = add_forward_return(df)
+    if "EligibleForBacktest" in df.columns:
+        before = len(df)
+        df = df.loc[df["EligibleForBacktest"].astype(bool)].copy()
+        print(
+            "Applied EligibleForBacktest filter: "
+            f"{len(df):,}/{before:,} rows retained."
+        )
 
     predictions_df = run_walk_forward(
         df,
@@ -685,4 +707,4 @@ def main(models=None, verbose=True):
 
 # Tähän lisätään mitä eri malleja syöttää ulos
 if __name__ == "__main__":
-    main(models=["OLS"])
+    main(models=["XGB"])
