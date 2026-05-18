@@ -3,8 +3,7 @@
 Master's thesis — Aalto University (MSc Business Analytics).
 **Empirical Asset Pricing via Machine Learning — Cross-Sectional Return Predictability in European Equities.**
 
-Authors: Christian Nikolajeff & Niklas Reijonen
-Supervisor: Pekka Palo
+
 
 ## Overview
 
