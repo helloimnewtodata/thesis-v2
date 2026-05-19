@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 import refinitiv.data as rd
 
-import main as main_pipeline
+from src import pipeline as main_pipeline
 import src.data_fetch as data_fetch
 from config import (
     CHUNK_SIZE as DEFAULT_CHUNK_SIZE,
@@ -32,11 +32,11 @@ from config import (
     SECTOR_DUMMY_NAMES,
     SLEEP_BETWEEN_CHUNKS as DEFAULT_SLEEP_BETWEEN_CHUNKS,
 )
-from main import HMM_ML_PATH
+from src.pipeline import HMM_ML_PATH
 from src.features import compute_all_features
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SURVIVOR_UNIVERSE_PATH = PROJECT_ROOT / "data" / "survivor_universe.csv"
 RAW_OUTPUT_DIR = PROJECT_ROOT / "data" / "01_raw"
 PREPROCESSED_OUTPUT_DIR = PROJECT_ROOT / "data" / "02_preprocessed"
@@ -231,7 +231,8 @@ MASTER_COLUMN_ORDER = [
     "Sector_Consumer",
     "Sector_Health_Care",
     "Sector_Technology_Communication",
-    "Daily_Return", "Rf_daily", "Excess_Return",
+    "Daily_Return", "Rf_daily",
+    "Monthly_Return", "Rf_monthly", "Excess_Return",
 
     # 10. HMM regime probabilities only (no state labels / training metadata)
     "Bull_Prob",
@@ -421,6 +422,8 @@ def main():
     df_master.to_csv(output_path, index=False)
 
     master_feature_cols = daily_feature_cols + [
+        "Monthly_Return",
+        "Rf_monthly",
         "Hurst",
         "Hurst_Raw_DFA",
         "Bull_Prob",

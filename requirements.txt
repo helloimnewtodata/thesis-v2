@@ -38,4 +38,3 @@ antropy>=0.2.2
 joblib>=1.5.3
 pandas-stubs<3.0.0
 
-

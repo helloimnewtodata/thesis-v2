@@ -7,6 +7,47 @@ import pandas as pd
 import numpy as np
 
 
+# Refinitiv-fundamentals can come back as object/string dtype when a chunk
+# fetch returns all-NaN for a column. Downstream arithmetic (e.g. Market Cap
+# / Cash Flow) then crashes with "unsupported operand type(s) for /". Coerce
+# upstream once so every compute_* function trusts numeric dtypes.
+NUMERIC_FUNDAMENTAL_COLUMNS = [
+    "Cash Flow",
+    "Net Cash Flow from Operating Activities",
+    "Cash Flow from Operations per Share",
+    "Earnings Per Share - Actual",
+    "Earnings Per Share Reported - Actual",
+    "EBITDA - Actual",
+    "Earnings before Interest Taxes Depreciation & Amortization",
+    "Shareholders Equity - Common",
+    "Total Debt",
+    "Outstanding Shares",
+    "Company Market Cap",
+    "Price Close",
+    "Price To Book Value Per Share (Daily Time Series Ratio)",
+    "Price To Sales Per Share (Daily Time Series Ratio)",
+    "Price To Cash Flow Per Share (Daily Time Series Ratio)",
+    "Price to Book Value per Share",
+    "Dividend Per Share - Actual",
+    "Return on Average Common Equity - %",
+]
+
+QUARTERLY_NUMERIC_COLUMNS = [
+    "NetIncome_Q",
+    "EPSfr_Q",
+    "NetCashFlowOp_Q",
+    "NetCFOpPerShr_Q",
+]
+
+
+def _coerce_numeric_columns(df, cols):
+    """Cast known numeric columns to float64 in place, mapping unparseable values to NaN."""
+    for c in cols:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
 # ---------------------------------------------------------------------------
 # VALUATION-ryhmä
 # ---------------------------------------------------------------------------
@@ -602,6 +643,13 @@ def compute_daily_return(df):
 def _prepare_market_returns(df_index):
     idx = df_index.loc[df_index["Instrument"] == ".STOXXR"].copy()
     idx["Date"] = pd.to_datetime(idx["Date"]).dt.normalize()
+    idx["Price Close"] = pd.to_numeric(idx["Price Close"], errors="coerce")
+    idx = idx.dropna(subset=["Date", "Price Close"])
+    if len(idx) < 2:
+        raise ValueError(
+            ".STOXXR benchmark series has fewer than 2 valid price rows; "
+            "Beta_252d and -IdioVol cannot be computed."
+        )
     idx = (
         idx.drop_duplicates(subset=["Date"], keep="last")
         .sort_values("Date")
@@ -842,6 +890,15 @@ def compute_all_features(
     """
 
     df = df_stocks.copy()
+    df = _coerce_numeric_columns(df, NUMERIC_FUNDAMENTAL_COLUMNS)
+    if df_quarterly_eps is not None:
+        df_quarterly_eps = _coerce_numeric_columns(
+            df_quarterly_eps.copy(), QUARTERLY_NUMERIC_COLUMNS
+        )
+    if df_quarterly_pcf is not None:
+        df_quarterly_pcf = _coerce_numeric_columns(
+            df_quarterly_pcf.copy(), QUARTERLY_NUMERIC_COLUMNS
+        )
 
     # Valuation
     df = compute_pe_ltm(df)                  # P/E, E/P  (LTM only, PE_trial)

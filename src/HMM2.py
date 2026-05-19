@@ -1,46 +1,42 @@
 #
 # ============================================================
-# HMM-KOODIN MAHDOLLISET ONGELMAT VS. GITHUB-ESIMERKKI
+# HMM2: TIMING-SHARPE-OPTIMOITU GAUSSIAN HMM
 # ============================================================
 #
-# 1. Regiimien labelointi
-# HMM:n state-numerot eivät itsessään tarkoita bull/bear/transition.
-# Jos malli refitataan kuukausittain, state 0 voi eri kerroilla tarkoittaa eri asiaa.
-# Ratkaisu: jokaisen refitin jälkeen mapataan state:t uudelleen taloudellisen tulkinnan mukaan
-# esim. tuotto, VSTOXX ja credit spread huomioiden.
+# Variantti HMM.py:lle, jonka muutokset on suunnattu yhteen tavoitteeseen:
+# parantaa standalone-timing-Sharpea regime_strategy_benchmark_soft-tyylisessa
+# 1-P(Bear) -strategiassa. Ei ML-feature-targetointia.
 #
-# 2. Labelointi vain STOXX-tuoton perusteella voi olla liian kapea
-# Bear-regiimi ei ole aina vain matalin keskimääräinen osaketuotto.
-# Se voi olla myös korkea volatiliteetti + korkea credit spread + heikko tuotto.
-# GitHub-esimerkissä tämä ei ole iso ongelma, koska siellä on vain yksi input-sarja.
+# Erot HMM.py:hin (kaikki konfiguroitavissa env-vaareilla):
 #
-# 3. Expanding window voi reagoida hitaasti
-# Oletuksena tämä malli käyttää koko historiaa aina source dateen asti.
-# Tämä välttää look-aheadin, mutta vanha data voi dominoida.
-# Skripti tukee myös rolling-window-tilaa env-varilla WINDOW_MODE=rolling.
+# 1) N_COMPONENTS = 2 (Bull/Bear) oletuksena.
+#    K=3:n Transition on tulkinnallisesti epaselva ja aiheuttaa whip-sawta
+#    posterioreissa. Shu et al. -tyyppisessa kirjallisuudessa K=2 on stabiilimpi
+#    timingiin. K=3 edelleen tuettu env-vaarilla.
 #
-# 4. Kuukausittainen ajoitus pitää varmistaa
-# HMM-featuret kuukauden lopussa t pitää yhdistää seuraavan kuukauden tuottoon t+1.
-# Muuten voi syntyä same-period leakage.
-# Siksi tämä skripti tekee erikseen ML-safe outputin, jossa signal month-end on siirretty target-kuulle.
+# 2) Multi-restart fitting (HMM_N_INIT, oletus 10).
+#    HMM.py kaytti yhta kiintea random_state=42. Tama voi loytaa huonon
+#    paikallisen minimin. Tassa kokeillaan N satunnaista alkutilaa per refit ja
+#    valitaan korkein log-likelihood. Tradeoff: ~N-kertainen compute-aika.
 #
-# 5. Last-day probability voi olla noisy
-# Skripti tallettaa edelleen viimeisen päivän posteriorit, mutta laskee lisäksi
-# myös viimeisen N kaupankäyntipäivän keskiarvoposteriorit
-# (POSTERIOR_MEAN_WINDOW_DAYS, oletus 5).
+# 3) Diagonaalinen kovarianssi (HMM_COVARIANCE_TYPE = "diag" oletus).
+#    "full" overfittaa pienissa trainingikkunoissa, koska kovaltiis-parametreja
+#    on K * D^2/2 versus K * D. "diag" pakottaa featuret riippumattomiksi state:n
+#    sisalla, mika on saannolliseempi.
 #
-# 6. Skaalaus pitää tehdä ilman look-aheadia
-# StandardScaleria ei saa fitata koko samplella.
-# Se pitää fitata vain siihen dataan, joka on saatavilla kyseiseen source dateen asti.
+# 4) Sileytetyt low-frequency featuret (FEATURE_SMOOTHING_DAYS, oletus 5).
+#    vstoxx / term_spread / credit_spread saavat 5-paivan rolling meanin
+#    (taakse, ei look-aheadia). Daily return jaa raaaksi koska se on
+#    informatiivisin signaali. Vahentaa posterioreita heiluttavaa kohinaa.
 #
-# 7. Sanity check -visualisointi on tärkeä
-# Regiimit kannattaa plotata hinnan ja featureiden päälle, jotta näkee osuuko malli
-# kriiseihin ja stressijaksoihin järkevästi.
-# Tämä skripti kirjoittaa myös probability-plotin Bear/Bull/Transition-sarjoille.
+# 5) Pidempi posterior-keskiarvoikkuna (POSTERIOR_MEAN_WINDOW_DAYS, oletus 20).
+#    HMM.py kaytti 5pv. Pidempi ikkuna sammuttaa whip-sawta strategiatasolla
+#    ja antaa softer signaalin Bear-todennakoisyydelle.
 #
-# 8. HMM vs. muut mallit
-# Tämä skripti käyttää suoraan HMM:ää.
-# Thesisissä perustelu voi olla, että HMM sopii hyvin ajallisesti pysyvien latenttien tilojen mallintamiseen.
+# Output:
+# Saa samat sarakkeet kuin HMM.py (HMM_Regime, Bear_Prob, Bear_Prob_MeanWindow,
+# jne.), jotta regime_strategy_benchmark_soft drop-in toimii ilman muutoksia.
+# K=2-tilassa Transition_Prob == 0 ja Transition-state-mittarit ovat NaN.
 #
 import os
 import warnings
@@ -64,21 +60,24 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "data" / "01_raw" / "outputs"
-MONTHLY_OUTPUT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead.csv"
-MONTHLY_ML_OUTPUT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_ml.csv"
-FEATURE_PLOT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_features.png"
-PROBABILITY_PLOT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_probabilities.png"
+MONTHLY_OUTPUT_PATH = OUTPUT_DIR / "hmm2_regimes_monthly_no_lookahead.csv"
+MONTHLY_ML_OUTPUT_PATH = OUTPUT_DIR / "hmm2_regimes_monthly_no_lookahead_ml.csv"
+FEATURE_PLOT_PATH = OUTPUT_DIR / "hmm2_regimes_monthly_no_lookahead_features.png"
+PROBABILITY_PLOT_PATH = OUTPUT_DIR / "hmm2_regimes_monthly_no_lookahead_probabilities.png"
 
 START_DATE = os.getenv("START_DATE", "2006-01-01")
 END_DATE = os.getenv("END_DATE", "2026-04-30")
-N_COMPONENTS = int(os.getenv("N_COMPONENTS", "3"))
+N_COMPONENTS = int(os.getenv("N_COMPONENTS", "2"))
 MIN_TRAIN_OBS = int(os.getenv("MIN_TRAIN_OBS", "756"))
 HMM_MAX_ITER = int(os.getenv("HMM_MAX_ITER", "500"))
 HMM_TOL = float(os.getenv("HMM_TOL", "1e-4"))
 HMM_RANDOM_STATE = int(os.getenv("HMM_RANDOM_STATE", "42"))
+HMM_N_INIT = int(os.getenv("HMM_N_INIT", "10"))
+HMM_COVARIANCE_TYPE = os.getenv("HMM_COVARIANCE_TYPE", "diag").strip().lower()
+FEATURE_SMOOTHING_DAYS = int(os.getenv("FEATURE_SMOOTHING_DAYS", "5"))
 WINDOW_MODE = os.getenv("WINDOW_MODE", "expanding").strip().lower()
 ROLLING_WINDOW_OBS = int(os.getenv("ROLLING_WINDOW_OBS", "1260"))
-POSTERIOR_MEAN_WINDOW_DAYS = int(os.getenv("POSTERIOR_MEAN_WINDOW_DAYS", "5"))
+POSTERIOR_MEAN_WINDOW_DAYS = int(os.getenv("POSTERIOR_MEAN_WINDOW_DAYS", "20"))
 
 REGIME_COLORS = {0: "green", 1: "red", 2: "orange"}
 REGIME_LABELS = {0: "Bull", 1: "Bear", 2: "Transition"}
@@ -118,6 +117,14 @@ def build_feature_matrix(df_equity, df_yields, df_credit):
     hmm_df = hmm_df.join(df_credit, how="left")
     hmm_df["credit_spread"] = hmm_df["credit_spread"].ffill()
 
+    # HMM2: sileyta low-frequency featuret takautuvalla rolling meanilla. EI
+    # look-aheadia koska rolling(window).mean() kayttaa vain menneita havaintoja.
+    # Daily return pidetaan raaaksi - se on informatiivisin Bear-signaali ja sen
+    # sileytys lisaisi viivetta liikaa.
+    if FEATURE_SMOOTHING_DAYS > 1:
+        for col in ("vstoxx", "term_spread", "credit_spread"):
+            hmm_df[col] = hmm_df[col].rolling(FEATURE_SMOOTHING_DAYS, min_periods=1).mean()
+
     features = ["stoxx_return", "vstoxx", "term_spread", "credit_spread"]
     hmm_df = hmm_df[features].dropna().sort_index()
     stoxx_price = stoxx_price.reindex(hmm_df.index)
@@ -142,14 +149,21 @@ def zscore_series(values: pd.Series):
 
 
 def make_regime_map(raw_states, train_df):
+    """Map raw HMM2 state ids to economic regimes using training-window means.
+
+    K=2: highest economic score -> Bull (0), lowest -> Bear (1).
+    K=3: middle -> Transition (2). No look-ahead: uses only training data means.
+    """
     state_means = (
         train_df.assign(raw_state=raw_states)
         .groupby("raw_state")[["stoxx_return", "vstoxx", "term_spread", "credit_spread"]]
         .mean()
     )
 
-    if len(state_means) < 3:
-        raise ValueError(f"HMM loysi vain {len(state_means)} statea, tarvitaan 3.")
+    if len(state_means) < N_COMPONENTS:
+        raise ValueError(
+            f"HMM2 loysi vain {len(state_means)} statea, tarvitaan {N_COMPONENTS}."
+        )
 
     standardized = state_means.apply(zscore_series, axis=0)
     economic_score = (
@@ -160,33 +174,73 @@ def make_regime_map(raw_states, train_df):
     )
 
     sorted_states = economic_score.sort_values(ascending=False).index.tolist()
-    regime_map = {
-        sorted_states[0]: 0,
-        sorted_states[-1]: 1,
-        sorted_states[1]: 2,
-    }
+
+    if N_COMPONENTS == 2:
+        regime_map = {
+            sorted_states[0]: 0,
+            sorted_states[-1]: 1,
+        }
+    elif N_COMPONENTS == 3:
+        regime_map = {
+            sorted_states[0]: 0,
+            sorted_states[-1]: 1,
+            sorted_states[1]: 2,
+        }
+    else:
+        raise ValueError(f"N_COMPONENTS={N_COMPONENTS} ei tueta; kayta 2 tai 3.")
+
     return regime_map, state_means, economic_score
 
 
 def map_raw_posterior_to_regime_probabilities(raw_posterior, regime_map):
     posterior_by_regime = {0: 0.0, 1: 0.0, 2: 0.0}
     for raw_state, prob in enumerate(raw_posterior):
-        posterior_by_regime[regime_map[raw_state]] = float(prob)
+        regime = regime_map.get(raw_state)
+        if regime is not None:
+            posterior_by_regime[regime] = float(prob)
     return posterior_by_regime
 
 
+def fit_best_hmm(X_scaled):
+    """Multi-restart HMM fit; keep the highest log-likelihood model."""
+    seed_rng = np.random.default_rng(HMM_RANDOM_STATE)
+    seeds = seed_rng.integers(0, 10**9, size=HMM_N_INIT)
+
+    best_model = None
+    best_score = -np.inf
+    fit_failures = 0
+
+    for seed in seeds:
+        try:
+            candidate = GaussianHMM(
+                n_components=N_COMPONENTS,
+                covariance_type=HMM_COVARIANCE_TYPE,
+                n_iter=HMM_MAX_ITER,
+                random_state=int(seed),
+                tol=HMM_TOL,
+            )
+            candidate.fit(X_scaled)
+            score = candidate.score(X_scaled)
+            if np.isfinite(score) and score > best_score:
+                best_score = score
+                best_model = candidate
+        except Exception:
+            fit_failures += 1
+            continue
+
+    if best_model is None:
+        raise RuntimeError(
+            f"All {HMM_N_INIT} HMM2 restarts failed ({fit_failures} exceptions)."
+        )
+    return best_model, fit_failures
+
+
 def fit_predict_month_end_regime(train_df, features):
+    # StandardScaler is fit ONLY on this month's training window — no look-ahead
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(train_df[features].values)
 
-    model = GaussianHMM(
-        n_components=N_COMPONENTS,
-        covariance_type="full",
-        n_iter=HMM_MAX_ITER,
-        random_state=HMM_RANDOM_STATE,
-        tol=HMM_TOL,
-    )
-    model.fit(X_scaled)
+    model, fit_failures = fit_best_hmm(X_scaled)
 
     raw_states = model.predict(X_scaled)
     regime_map, state_means, economic_score = make_regime_map(raw_states, train_df)
@@ -194,9 +248,9 @@ def fit_predict_month_end_regime(train_df, features):
     last_raw_state = int(raw_states[-1])
     last_regime = int(regime_map[last_raw_state])
 
-    bull_state = [k for k, v in regime_map.items() if v == 0][0]
-    bear_state = [k for k, v in regime_map.items() if v == 1][0]
-    transition_state = [k for k, v in regime_map.items() if v == 2][0]
+    bull_state = next((k for k, v in regime_map.items() if v == 0), None)
+    bear_state = next((k for k, v in regime_map.items() if v == 1), None)
+    transition_state = next((k for k, v in regime_map.items() if v == 2), None)
 
     posterior_all_raw = model.predict_proba(X_scaled)
     posterior_last_raw = posterior_all_raw[-1]
@@ -208,6 +262,16 @@ def fit_predict_month_end_regime(train_df, features):
         posterior_mean_raw,
         regime_map,
     )
+
+    def state_return(state_key):
+        if state_key is None or state_key not in state_means.index:
+            return float("nan")
+        return float(state_means.loc[state_key, "stoxx_return"])
+
+    def state_score(state_key):
+        if state_key is None or state_key not in economic_score.index:
+            return float("nan")
+        return float(economic_score.loc[state_key])
 
     return {
         "HMM_Regime": last_regime,
@@ -221,12 +285,16 @@ def fit_predict_month_end_regime(train_df, features):
         "LastRawState": last_raw_state,
         "ModelConverged": bool(model.monitor_.converged),
         "TrainLogLikelihood": float(model.score(X_scaled)),
-        "BullStateTrainMeanReturn": float(state_means.loc[bull_state, "stoxx_return"]),
-        "BearStateTrainMeanReturn": float(state_means.loc[bear_state, "stoxx_return"]),
-        "TransitionStateTrainMeanReturn": float(state_means.loc[transition_state, "stoxx_return"]),
-        "BullStateEconomicScore": float(economic_score.loc[bull_state]),
-        "BearStateEconomicScore": float(economic_score.loc[bear_state]),
-        "TransitionStateEconomicScore": float(economic_score.loc[transition_state]),
+        "MultiRestartFailures": int(fit_failures),
+        "NComponents": int(N_COMPONENTS),
+        "CovarianceType": HMM_COVARIANCE_TYPE,
+        "FeatureSmoothingDays": int(FEATURE_SMOOTHING_DAYS),
+        "BullStateTrainMeanReturn": state_return(bull_state),
+        "BearStateTrainMeanReturn": state_return(bear_state),
+        "TransitionStateTrainMeanReturn": state_return(transition_state),
+        "BullStateEconomicScore": state_score(bull_state),
+        "BearStateEconomicScore": state_score(bear_state),
+        "TransitionStateEconomicScore": state_score(transition_state),
     }
 
 
@@ -259,7 +327,10 @@ def build_no_lookahead_monthly_regimes(hmm_df, features):
         try:
             pred = fit_predict_month_end_regime(train_df, features)
         except Exception as exc:
-            print(f"HMM fit epaonnistui kuukaudelle {month_end.date()} (source {source_date.date()}): {exc}")
+            print(
+                f"HMM2 fit epaonnistui kuukaudelle {month_end.date()} "
+                f"(source {source_date.date()}): {exc}"
+            )
             continue
 
         rows.append(
@@ -277,7 +348,7 @@ def build_no_lookahead_monthly_regimes(hmm_df, features):
 
         if position % 12 == 0 or position == total_month_ends:
             print(
-                f"No-lookahead HMM: {position}/{total_month_ends} month-endia kasitelty "
+                f"No-lookahead HMM2: {position}/{total_month_ends} month-endia kasitelty "
                 f"(viimeisin {month_end.strftime('%Y-%m')})"
             )
 
@@ -308,9 +379,9 @@ def plot_month_end_feature_regimes(hmm_df, stoxx_price, monthly, output_path: Pa
 
     series_specs = [
         ("STOXX 600", stoxx_price, axes[0]),
-        ("VSTOXX", hmm_df["vstoxx"], axes[1]),
-        ("Term Spread (10Y-2Y)", hmm_df["term_spread"], axes[2]),
-        ("Sovereign Spread (All-AAA)", hmm_df["credit_spread"], axes[3]),
+        (f"VSTOXX (smoothed {FEATURE_SMOOTHING_DAYS}d)", hmm_df["vstoxx"], axes[1]),
+        (f"Term Spread (smoothed {FEATURE_SMOOTHING_DAYS}d)", hmm_df["term_spread"], axes[2]),
+        (f"Credit Spread (smoothed {FEATURE_SMOOTHING_DAYS}d)", hmm_df["credit_spread"], axes[3]),
     ]
 
     for label, full_series, axis in series_specs:
@@ -328,7 +399,10 @@ def plot_month_end_feature_regimes(hmm_df, stoxx_price, monthly, output_path: Pa
         axis.set_ylabel(label)
 
     axes[0].legend(loc="upper left", markerscale=1.3)
-    axes[0].set_title("No-Lookahead HMM Month-End Regimes")
+    axes[0].set_title(
+        f"HMM2 Month-End Regimes (K={N_COMPONENTS}, cov={HMM_COVARIANCE_TYPE}, "
+        f"n_init={HMM_N_INIT}, post window={POSTERIOR_MEAN_WINDOW_DAYS}d)"
+    )
     axes[-1].set_xlabel("Date")
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -351,17 +425,20 @@ def plot_monthly_regime_probabilities(monthly, output_path: Path):
         linewidth=1.7,
         label="Bear_Prob_MeanWindow",
     )
-    ax.plot(
-        monthly["Date"],
-        monthly["Transition_Prob_MeanWindow"],
-        color=REGIME_COLORS[2],
-        linewidth=1.7,
-        label="Transition_Prob_MeanWindow",
-    )
+    if N_COMPONENTS >= 3:
+        ax.plot(
+            monthly["Date"],
+            monthly["Transition_Prob_MeanWindow"],
+            color=REGIME_COLORS[2],
+            linewidth=1.7,
+            label="Transition_Prob_MeanWindow",
+        )
     ax.set_ylim(-0.02, 1.02)
     ax.set_ylabel("Probability")
     ax.set_xlabel("Date")
-    ax.set_title(f"No-Lookahead HMM Month-End Regime Probabilities ({POSTERIOR_MEAN_WINDOW_DAYS}D Mean)")
+    ax.set_title(
+        f"HMM2 Month-End Regime Probabilities ({POSTERIOR_MEAN_WINDOW_DAYS}D Mean, K={N_COMPONENTS})"
+    )
     ax.legend(loc="upper left")
     ax.grid(alpha=0.2)
     fig.tight_layout()
@@ -379,13 +456,27 @@ def main():
         )
     if POSTERIOR_MEAN_WINDOW_DAYS < 1:
         raise ValueError("POSTERIOR_MEAN_WINDOW_DAYS tulee olla vahintaan 1.")
+    if FEATURE_SMOOTHING_DAYS < 1:
+        raise ValueError("FEATURE_SMOOTHING_DAYS tulee olla vahintaan 1.")
     if WINDOW_MODE == "rolling" and ROLLING_WINDOW_OBS < MIN_TRAIN_OBS:
         raise ValueError("ROLLING_WINDOW_OBS tulee olla >= MIN_TRAIN_OBS rolling-tilassa.")
+    if N_COMPONENTS not in {2, 3}:
+        raise ValueError(f"N_COMPONENTS={N_COMPONENTS} ei tueta; kayta 2 tai 3.")
+    if HMM_N_INIT < 1:
+        raise ValueError("HMM_N_INIT tulee olla vahintaan 1.")
+    if HMM_COVARIANCE_TYPE not in {"diag", "full", "tied", "spherical"}:
+        raise ValueError(
+            f"HMM_COVARIANCE_TYPE={HMM_COVARIANCE_TYPE!r} ei tueta. "
+            "Sallitut: diag, full, tied, spherical."
+        )
 
     print(
-        "Building no-lookahead HMM monthly regimes "
+        "Building no-lookahead HMM2 monthly regimes "
         f"with {WINDOW_MODE} window from {START_DATE} to {END_DATE} "
-        f"(min train obs={MIN_TRAIN_OBS}, posterior mean window={POSTERIOR_MEAN_WINDOW_DAYS}d)"
+        f"(K={N_COMPONENTS}, cov={HMM_COVARIANCE_TYPE}, n_init={HMM_N_INIT}, "
+        f"feature smoothing={FEATURE_SMOOTHING_DAYS}d, "
+        f"posterior mean window={POSTERIOR_MEAN_WINDOW_DAYS}d, "
+        f"min train obs={MIN_TRAIN_OBS})"
     )
     if WINDOW_MODE == "rolling":
         print(f"Rolling window observations: {ROLLING_WINDOW_OBS}")
@@ -419,9 +510,12 @@ def main():
             f"{monthly['Date'].max().strftime('%Y-%m')}"
         )
         print("\nRegime distribution:")
-        print(monthly["HMM_Regime"].value_counts().rename(
-            {0: "Bull (0)", 1: "Bear (1)", 2: "Transition (2)"}
-        ).sort_index())
+        print(
+            monthly["HMM_Regime"]
+            .value_counts()
+            .rename({0: "Bull (0)", 1: "Bear (1)", 2: "Transition (2)"})
+            .sort_index()
+        )
         print("\nHead:")
         print(monthly.head(12).to_string(index=False))
     finally:

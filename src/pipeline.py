@@ -1,22 +1,19 @@
 """
-Pääorkesteri: ajaa koko pipelinen data fetch → features → monthly master.
+Kirjastomoduuli master-paneelin rakennukseen: data fetch → features → monthly master.
+
+Julkinen rajapinta (importoidaan scripts/-skripteistä):
+    HMM_ML_PATH              — vakio: HMM-regiimitiedoston oletuspolku
+    to_monthly_stock_panel   — päivätason osakedata → kuukausipaneeli
+    build_master_dataframe   — yhdistä features + HMM kuukausimasteriin
+
+Ei oma entry point — ajetaan scripts/updated_main_test.py tai scripts/PIT_universe.py kautta.
 """
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
-from config import (
-    DISPLAY_START_DATE,
-    SECTOR_DUMMIES,
-    SECTOR_DUMMY_NAMES,
-)
-from src.data_fetch import (
-    open_session,
-    fetch_stock_fundamentals,
-    fetch_index_data,
-    fetch_euribor,
-)
-from src.features import compute_all_features
+from config import DISPLAY_START_DATE
 
 try:
     from src.hurst import compute_hurst_dfa
@@ -27,8 +24,6 @@ else:
     HURST_IMPORT_ERROR = None
 
 
-MASTER_OUTPUT_PATH = Path("data/02_preprocessed/master_features_monthly.csv")
-INDEX_OUTPUT_PATH = Path("data/02_preprocessed/df_index_features.csv")
 HMM_ML_PATH = Path("data/01_raw/outputs/hmm_regimes_monthly_no_lookahead_ml.csv")
 HMM_PROBABILITY_COLUMNS = [
     "Date",
@@ -58,7 +53,15 @@ def _ensure_date_column(df):
 
 
 def to_monthly_stock_panel(df_features):
-    """One row per Instrument-month using the last available stock observation."""
+    """
+    One row per Instrument-month using the last available stock observation.
+
+    The daily feature pipeline keeps Daily_Return and Rf_daily because they are
+    needed for rolling risk features. At the monthly modelling frequency,
+    Excess_Return is overwritten as the realised monthly stock return minus the
+    compounded monthly risk-free return. models.add_forward_return then shifts
+    this column by one month to form the next-month target.
+    """
     df = _ensure_date_column(df_features).sort_values(["Instrument", "Date"]).copy()
     df["_Month"] = df["Date"].dt.to_period("M")
 
@@ -69,6 +72,28 @@ def to_monthly_stock_panel(df_features):
     )
     monthly["StockSourceDate"] = monthly["Date"]
     monthly["Date"] = monthly["_Month"].dt.to_timestamp("M")
+
+    if "Price Close" in monthly.columns:
+        monthly["Monthly_Return"] = monthly.groupby("Instrument")["Price Close"].pct_change()
+
+    if "Rf_daily" in df.columns:
+        rf_daily = (
+            df[["_Month", "Date", "Rf_daily"]]
+            .dropna(subset=["Rf_daily"])
+            .drop_duplicates(subset=["Date"], keep="last")
+            .sort_values("Date")
+        )
+        rf_monthly = (
+            rf_daily.groupby("_Month")["Rf_daily"]
+            .apply(lambda x: float(np.prod(1.0 + x.to_numpy(dtype=float)) - 1.0))
+            .rename("Rf_monthly")
+            .reset_index()
+        )
+        monthly = monthly.merge(rf_monthly, on="_Month", how="left")
+
+    if {"Monthly_Return", "Rf_monthly"}.issubset(monthly.columns):
+        monthly["Excess_Return"] = monthly["Monthly_Return"] - monthly["Rf_monthly"]
+
     return monthly.drop(columns=["_Month"]).reset_index(drop=True)
 
 
@@ -143,48 +168,3 @@ def build_master_dataframe(df_features, df_idx, hmm_path=HMM_ML_PATH):
     return master.sort_values(["Instrument", "Date"]).reset_index(drop=True)
 
 
-def main():
-    # 0. Avaa Refinitiv-sessio
-    open_session()
-
-    # 1. Lataa universumi
-    universe = load_universe()
-    print(f"Universumi: {len(universe)} osaketta")
-
-    # 2. Hae data
-    print("Haetaan osakkeiden fundamentaalit...")
-    df_stocks = fetch_stock_fundamentals(universe)
-
-    print("Haetaan indeksidata...")
-    df_index, df_index_fundamentals = fetch_index_data()
-
-    print("Haetaan EURIBOR...")
-    df_euribor = fetch_euribor()
-
-    # 3. Laske featuret
-    print("Lasketaan featuret...")
-    df_features, df_idx = compute_all_features(
-        df_stocks, df_index, df_index_fundamentals, df_euribor,
-        SECTOR_DUMMIES, SECTOR_DUMMY_NAMES,
-    )
-
-    # 4. Rakenna yksi kuukausitason master-dataframe
-    print("Rakennetaan master dataframe...")
-    df_master = build_master_dataframe(df_features, df_idx)
-
-    # 5. Tallenna
-    print("Tallennetaan...")
-    MASTER_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    df_master.to_csv(MASTER_OUTPUT_PATH, index=False)
-    df_idx.to_csv(INDEX_OUTPUT_PATH, index=True)
-    print(f"Master rows: {len(df_master):,}")
-    print(f"Saved: {MASTER_OUTPUT_PATH}")
-    print(f"Saved: {INDEX_OUTPUT_PATH}")
-    print("Valmis!")
-
-    # 6. Mallinnus (TODO)
-    # results = run_walk_forward(df_master)
-
-
-if __name__ == "__main__":
-    main()

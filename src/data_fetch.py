@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import time
 import warnings
+from pathlib import Path
 
 from config import (
     PARAMS_DAILY, PARAMS_EURIBOR, INDEX_UNIVERSE, EURIBOR_RIC,
@@ -15,6 +16,9 @@ from config import (
 )
 
 warnings.filterwarnings('ignore', category=FutureWarning)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+INDEX_PRICE_CACHE_PATH = PROJECT_ROOT / "data" / "01_raw" / "updated_smoke_index.csv"
 
 
 def open_session():
@@ -325,6 +329,72 @@ def fetch_stock_prices(universe):
     return df
 
 
+def _valid_index_price_count(df, instrument):
+    """Count rows with a real date and price for a single index RIC."""
+    if df is None or df.empty:
+        return 0
+    required = {"Instrument", "Date", "Price Close"}
+    if not required.issubset(df.columns):
+        return 0
+
+    mask = df["Instrument"].eq(instrument)
+    dates = pd.to_datetime(df.loc[mask, "Date"], errors="coerce")
+    prices = pd.to_numeric(df.loc[mask, "Price Close"], errors="coerce")
+    return int((dates.notna() & prices.notna()).sum())
+
+
+def _fetch_single_index_price_history(instrument):
+    """Fallback for index RICs that rd.get_data returns as a NaT/NaN row."""
+    hist = rd.get_history(
+        universe=[instrument],
+        fields=["TR.PriceClose"],
+        start=PARAMS_DAILY["SDate"],
+        end=PARAMS_DAILY["EDate"],
+        interval="1D",
+    )
+    hist = hist.reset_index()
+    if "Date" not in hist.columns:
+        hist = hist.rename(columns={hist.columns[0]: "Date"})
+
+    price_col = None
+    for candidate in ["Price Close", "TR.PriceClose", "Close Price"]:
+        if candidate in hist.columns:
+            price_col = candidate
+            break
+    if price_col is None:
+        non_date_cols = [c for c in hist.columns if c != "Date"]
+        if non_date_cols:
+            price_col = non_date_cols[0]
+    if price_col is None:
+        return pd.DataFrame(columns=["Instrument", "Date", "Price Close"])
+
+    hist = hist.rename(columns={price_col: "Price Close"})
+    hist["Instrument"] = instrument
+    return hist[["Instrument", "Date", "Price Close"]]
+
+
+def _load_cached_index_prices(instrument):
+    if not INDEX_PRICE_CACHE_PATH.exists():
+        return pd.DataFrame(columns=["Instrument", "Date", "Price Close"])
+
+    cached = pd.read_csv(
+        INDEX_PRICE_CACHE_PATH,
+        usecols=["Instrument", "Date", "Price Close"],
+    )
+    cached = _coerce_numeric_columns(cached)
+    cached["Date"] = pd.to_datetime(cached["Date"], errors="coerce")
+    cached = cached.loc[cached["Instrument"].eq(instrument)].dropna(
+        subset=["Date", "Price Close"]
+    )
+
+    start = pd.to_datetime(PARAMS_DAILY["SDate"])
+    end = pd.to_datetime(PARAMS_DAILY["EDate"])
+    if cached.empty or cached["Date"].min() > start or cached["Date"].max() < end:
+        return pd.DataFrame(columns=["Instrument", "Date", "Price Close"])
+
+    return cached.loc[(cached["Date"] >= start) & (cached["Date"] <= end)].copy()
+
+
 def fetch_index_data():
     """
     Hakee indeksidatan (.STOXX ja .STOXXR) — sama kuin
@@ -336,16 +406,49 @@ def fetch_index_data():
         "TR.PriceClose",
     ]
 
-    df_index = rd.get_data(
-        universe=INDEX_UNIVERSE,
-        fields=price_fields,
-        parameters=PARAMS_DAILY,
-    )
+    # Hae jokainen indeksi erikseen: pitkillä aikaikkunoilla rd.get_data
+    # palauttaa yhdistetyssä kutsussa toiselle instrumentille vain yhden NaT/NaN-rivin.
+    parts = []
+    for ric in INDEX_UNIVERSE:
+        last_exc = None
+        try:
+            part = rd.get_data(
+                universe=[ric],
+                fields=price_fields,
+                parameters=PARAMS_DAILY,
+            )
+            part = _coerce_numeric_columns(part)
+        except Exception as exc:
+            last_exc = exc
+            print(f"WARNING: {ric} rd.get_data failed: {exc}")
+            part = pd.DataFrame(columns=["Instrument", "Date", "Price Close"])
+
+        if _valid_index_price_count(part, ric) < 2:
+            print(f"WARNING: {ric} price series was empty from rd.get_data; trying rd.get_history...")
+            try:
+                part = _fetch_single_index_price_history(ric)
+                part = _coerce_numeric_columns(part)
+            except Exception as exc:
+                last_exc = exc
+                print(f"WARNING: {ric} rd.get_history failed: {exc}")
+                part = pd.DataFrame(columns=["Instrument", "Date", "Price Close"])
+
+        if _valid_index_price_count(part, ric) < 2:
+            print(f"WARNING: {ric} live price fetch failed; trying cache {INDEX_PRICE_CACHE_PATH}...")
+            part = _load_cached_index_prices(ric)
+
+        if _valid_index_price_count(part, ric) < 2:
+            raise ValueError(
+                f"{ric} index price series is missing or all-NaN. "
+                "Index features and beta/idiosyncratic volatility cannot be computed."
+            ) from last_exc
+
+        parts.append(part)
+    df_index = pd.concat(parts, ignore_index=True)
     df_index = _coerce_numeric_columns(df_index)
 
-    # Refinitiv voi palauttaa samoille instrumentti-päiväpareille identtisiä rivejä
-    # erityisesti pyhien ympärillä, joten siivotaan ne heti pois.
-    df_index["Date"] = pd.to_datetime(df_index["Date"])
+    df_index["Date"] = pd.to_datetime(df_index["Date"], errors="coerce")
+    df_index = df_index.dropna(subset=["Date", "Price Close"])
     df_index = (
         df_index
         .drop_duplicates(subset=["Instrument", "Date"], keep="last")

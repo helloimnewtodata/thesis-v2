@@ -25,10 +25,10 @@ from src.features import (
     compute_daily_return,
     compute_idiosyncratic_vol,
 )
-from main import to_monthly_stock_panel
+from src.pipeline import to_monthly_stock_panel
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SURVIVOR_UNIVERSE_PATH = PROJECT_ROOT / "data" / "survivor_universe.csv"
 OUTPUT_PATH = PROJECT_ROOT / "data" / "diagnostics" / "beta_idiovol_warmup_check.csv"
 

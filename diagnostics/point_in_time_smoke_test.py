@@ -20,7 +20,7 @@ from pathlib import Path
 import pandas as pd
 import refinitiv.data as rd
 
-import main as main_pipeline
+from src import pipeline as main_pipeline
 import src.data_fetch as data_fetch
 from config import (
     CHUNK_SIZE as DEFAULT_CHUNK_SIZE,
@@ -30,10 +30,10 @@ from config import (
     SLEEP_BETWEEN_CHUNKS as DEFAULT_SLEEP_BETWEEN_CHUNKS,
 )
 from src.features import compute_all_features
-from updated_main_test import drop_extra_valuation_columns, reorder_master_columns
+from scripts.updated_main_test import drop_extra_valuation_columns, reorder_master_columns
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INTERVALS_PATH = PROJECT_ROOT / "data" / "stoxx600_membership_intervals.csv"
 DEFAULT_MASTER_OUTPUT = PROJECT_ROOT / "data" / "diagnostics" / "point_in_time_smoke_master.csv"
 DEFAULT_SUMMARY_OUTPUT = PROJECT_ROOT / "data" / "diagnostics" / "point_in_time_smoke_eligibility_by_month.csv"

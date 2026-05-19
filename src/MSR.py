@@ -1,46 +1,23 @@
-#
 # ============================================================
-# HMM-KOODIN MAHDOLLISET ONGELMAT VS. GITHUB-ESIMERKKI
+# MSR-BENCHMARK HMM:lle (Hamilton 1989 Markov-Switching Regression)
 # ============================================================
 #
-# 1. Regiimien labelointi
-# HMM:n state-numerot eivät itsessään tarkoita bull/bear/transition.
-# Jos malli refitataan kuukausittain, state 0 voi eri kerroilla tarkoittaa eri asiaa.
-# Ratkaisu: jokaisen refitin jälkeen mapataan state:t uudelleen taloudellisen tulkinnan mukaan
-# esim. tuotto, VSTOXX ja credit spread huomioiden.
+# Tama skripti peilaa src/HMM.py:n rakennetta tarkalleen, mutta vaihtaa
+# GaussianHMM:n tilalle statsmodels.tsa.regime_switching.MarkovRegression:n
+# (Hamilton 1989). Tarkoitus on tarjota akateemisesti vahvin suora
+# haastaja HMM:lle samassa diskreetin latenttitilan kehikossa.
 #
-# 2. Labelointi vain STOXX-tuoton perusteella voi olla liian kapea
-# Bear-regiimi ei ole aina vain matalin keskimääräinen osaketuotto.
-# Se voi olla myös korkea volatiliteetti + korkea credit spread + heikko tuotto.
-# GitHub-esimerkissä tämä ei ole iso ongelma, koska siellä on vain yksi input-sarja.
-#
-# 3. Expanding window voi reagoida hitaasti
-# Oletuksena tämä malli käyttää koko historiaa aina source dateen asti.
-# Tämä välttää look-aheadin, mutta vanha data voi dominoida.
-# Skripti tukee myös rolling-window-tilaa env-varilla WINDOW_MODE=rolling.
-#
-# 4. Kuukausittainen ajoitus pitää varmistaa
-# HMM-featuret kuukauden lopussa t pitää yhdistää seuraavan kuukauden tuottoon t+1.
-# Muuten voi syntyä same-period leakage.
-# Siksi tämä skripti tekee erikseen ML-safe outputin, jossa signal month-end on siirretty target-kuulle.
-#
-# 5. Last-day probability voi olla noisy
-# Skripti tallettaa edelleen viimeisen päivän posteriorit, mutta laskee lisäksi
-# myös viimeisen N kaupankäyntipäivän keskiarvoposteriorit
-# (POSTERIOR_MEAN_WINDOW_DAYS, oletus 5).
-#
-# 6. Skaalaus pitää tehdä ilman look-aheadia
-# StandardScaleria ei saa fitata koko samplella.
-# Se pitää fitata vain siihen dataan, joka on saatavilla kyseiseen source dateen asti.
-#
-# 7. Sanity check -visualisointi on tärkeä
-# Regiimit kannattaa plotata hinnan ja featureiden päälle, jotta näkee osuuko malli
-# kriiseihin ja stressijaksoihin järkevästi.
-# Tämä skripti kirjoittaa myös probability-plotin Bear/Bull/Transition-sarjoille.
-#
-# 8. HMM vs. muut mallit
-# Tämä skripti käyttää suoraan HMM:ää.
-# Thesisissä perustelu voi olla, että HMM sopii hyvin ajallisesti pysyvien latenttien tilojen mallintamiseen.
+# Erot HMM:aan:
+#   - Univariate: malli sovitetaan vain STOXX-tuottosarjaan. Tama on
+#     kanoninen Hamilton-asetelma ja vahvistaa tutkimuskysymyksen:
+#     riittaako tuottosarja regiimien tunnistamiseen, vai onko HMM:n
+#     monimuuttujainen latentti-tila lisaarvoinen?
+#   - Regime-riippuva keskiarvo + varianssi (switching_variance=True).
+#   - Relabelointi taloudellisen skoorin mukaan kayttaa _kaikkia_
+#     4 inputtia (stoxx_return, vstoxx, term_spread, credit_spread)
+#     paivakohtaiseen tila-assignmenttiin perustuvana keskiarvona,
+#     jotta lopullinen Bull/Bear/Transition-mappi on suoraan
+#     vertailukelpoinen HMM:n outputin kanssa.
 #
 import os
 import warnings
@@ -51,8 +28,8 @@ import numpy as np
 import pandas as pd
 import refinitiv.data as rd
 from src.ecb_cache_utils import ECB_CACHE_DIR, get_ecb_series
-from hmmlearn.hmm import GaussianHMM
 from sklearn.preprocessing import StandardScaler
+from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
 
 matplotlib.use("Agg")
@@ -60,22 +37,22 @@ from matplotlib import pyplot as plt
 
 
 warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = ROOT / "data" / "01_raw" / "outputs"
-MONTHLY_OUTPUT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead.csv"
-MONTHLY_ML_OUTPUT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_ml.csv"
-FEATURE_PLOT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_features.png"
-PROBABILITY_PLOT_PATH = OUTPUT_DIR / "hmm_regimes_monthly_no_lookahead_probabilities.png"
+MONTHLY_OUTPUT_PATH = OUTPUT_DIR / "msr_regimes_monthly_no_lookahead.csv"
+MONTHLY_ML_OUTPUT_PATH = OUTPUT_DIR / "msr_regimes_monthly_no_lookahead_ml.csv"
+FEATURE_PLOT_PATH = OUTPUT_DIR / "msr_regimes_monthly_no_lookahead_features.png"
+PROBABILITY_PLOT_PATH = OUTPUT_DIR / "msr_regimes_monthly_no_lookahead_probabilities.png"
 
 START_DATE = os.getenv("START_DATE", "2006-01-01")
 END_DATE = os.getenv("END_DATE", "2026-04-30")
 N_COMPONENTS = int(os.getenv("N_COMPONENTS", "3"))
 MIN_TRAIN_OBS = int(os.getenv("MIN_TRAIN_OBS", "756"))
-HMM_MAX_ITER = int(os.getenv("HMM_MAX_ITER", "500"))
-HMM_TOL = float(os.getenv("HMM_TOL", "1e-4"))
-HMM_RANDOM_STATE = int(os.getenv("HMM_RANDOM_STATE", "42"))
+MSR_MAX_ITER = int(os.getenv("MSR_MAX_ITER", "500"))
+MSR_RANDOM_STATE = int(os.getenv("MSR_RANDOM_STATE", "42"))
 WINDOW_MODE = os.getenv("WINDOW_MODE", "expanding").strip().lower()
 ROLLING_WINDOW_OBS = int(os.getenv("ROLLING_WINDOW_OBS", "1260"))
 POSTERIOR_MEAN_WINDOW_DAYS = int(os.getenv("POSTERIOR_MEAN_WINDOW_DAYS", "5"))
@@ -107,25 +84,25 @@ def fetch_input_data(start_date: str, end_date: str):
 
 
 def build_feature_matrix(df_equity, df_yields, df_credit):
-    hmm_df = pd.DataFrame(index=df_equity.index)
+    msr_df = pd.DataFrame(index=df_equity.index)
 
     stoxx_price = df_equity[".STOXX"].astype(float)
-    hmm_df["stoxx_return"] = np.log(stoxx_price / stoxx_price.shift(1))
-    hmm_df["vstoxx"] = df_equity[".V2TX"].astype(float)
-    hmm_df["term_spread"] = (
+    msr_df["stoxx_return"] = np.log(stoxx_price / stoxx_price.shift(1))
+    msr_df["vstoxx"] = df_equity[".V2TX"].astype(float)
+    msr_df["term_spread"] = (
         df_yields["DE10YT=RR"].astype(float) - df_yields["DE2YT=RR"].astype(float)
     )
-    hmm_df = hmm_df.join(df_credit, how="left")
-    hmm_df["credit_spread"] = hmm_df["credit_spread"].ffill()
+    msr_df = msr_df.join(df_credit, how="left")
+    msr_df["credit_spread"] = msr_df["credit_spread"].ffill()
 
     features = ["stoxx_return", "vstoxx", "term_spread", "credit_spread"]
-    hmm_df = hmm_df[features].dropna().sort_index()
-    stoxx_price = stoxx_price.reindex(hmm_df.index)
-    return hmm_df, features, stoxx_price
+    msr_df = msr_df[features].dropna().sort_index()
+    stoxx_price = stoxx_price.reindex(msr_df.index)
+    return msr_df, features, stoxx_price
 
 
-def get_month_end_observation_dates(hmm_df):
-    source_dates = pd.DatetimeIndex(hmm_df.index)
+def get_month_end_observation_dates(msr_df):
+    source_dates = pd.DatetimeIndex(msr_df.index)
     month_end_labels = source_dates.to_period("M").to_timestamp(how="end").normalize()
     obs = pd.DataFrame({"MonthEnd": month_end_labels, "SourceDate": source_dates})
     obs = obs.groupby("MonthEnd", as_index=False).tail(1)
@@ -149,7 +126,7 @@ def make_regime_map(raw_states, train_df):
     )
 
     if len(state_means) < 3:
-        raise ValueError(f"HMM loysi vain {len(state_means)} statea, tarvitaan 3.")
+        raise ValueError(f"MSR loysi vain {len(state_means)} statea, tarvitaan 3.")
 
     standardized = state_means.apply(zscore_series, axis=0)
     economic_score = (
@@ -176,19 +153,26 @@ def map_raw_posterior_to_regime_probabilities(raw_posterior, regime_map):
 
 
 def fit_predict_month_end_regime(train_df, features):
+    # Hamiltonin kanoninen asetelma: univariate stoxx_return, regime-riippuva
+    # keskiarvo + varianssi. Skaalataan jotta optimointi konvergoi vakaasti.
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(train_df[features].values)
+    y_scaled = scaler.fit_transform(train_df[["stoxx_return"]].values).ravel()
 
-    model = GaussianHMM(
-        n_components=N_COMPONENTS,
-        covariance_type="full",
-        n_iter=HMM_MAX_ITER,
-        random_state=HMM_RANDOM_STATE,
-        tol=HMM_TOL,
+    np.random.seed(MSR_RANDOM_STATE)
+    model = MarkovRegression(
+        endog=y_scaled,
+        k_regimes=N_COMPONENTS,
+        trend="c",
+        switching_variance=True,
     )
-    model.fit(X_scaled)
+    result = model.fit(maxiter=MSR_MAX_ITER, disp=False)
 
-    raw_states = model.predict(X_scaled)
+    # Smoothed marginal probabilities: shape (n_regimes, n_obs).
+    smoothed = np.asarray(result.smoothed_marginal_probabilities)
+    if smoothed.shape[0] != N_COMPONENTS:
+        smoothed = smoothed.T
+    # Paivakohtainen kova tila-assignment relabelointia varten.
+    raw_states = smoothed.argmax(axis=0)
     regime_map, state_means, economic_score = make_regime_map(raw_states, train_df)
 
     last_raw_state = int(raw_states[-1])
@@ -198,19 +182,19 @@ def fit_predict_month_end_regime(train_df, features):
     bear_state = [k for k, v in regime_map.items() if v == 1][0]
     transition_state = [k for k, v in regime_map.items() if v == 2][0]
 
-    posterior_all_raw = model.predict_proba(X_scaled)
-    posterior_last_raw = posterior_all_raw[-1]
+    # smoothed[regime, day] -> posterior viimeisena paivana per raw regime.
+    posterior_last_raw = smoothed[:, -1]
     posterior_by_regime = map_raw_posterior_to_regime_probabilities(posterior_last_raw, regime_map)
 
-    posterior_window_days = min(POSTERIOR_MEAN_WINDOW_DAYS, len(posterior_all_raw))
-    posterior_mean_raw = posterior_all_raw[-posterior_window_days:].mean(axis=0)
+    posterior_window_days = min(POSTERIOR_MEAN_WINDOW_DAYS, smoothed.shape[1])
+    posterior_mean_raw = smoothed[:, -posterior_window_days:].mean(axis=1)
     posterior_mean_by_regime = map_raw_posterior_to_regime_probabilities(
         posterior_mean_raw,
         regime_map,
     )
 
     return {
-        "HMM_Regime": last_regime,
+        "MSR_Regime": last_regime,
         "Bull_Prob": posterior_by_regime[0],
         "Bear_Prob": posterior_by_regime[1],
         "Transition_Prob": posterior_by_regime[2],
@@ -219,8 +203,8 @@ def fit_predict_month_end_regime(train_df, features):
         "Transition_Prob_MeanWindow": posterior_mean_by_regime[2],
         "PosteriorMeanWindowDaysUsed": posterior_window_days,
         "LastRawState": last_raw_state,
-        "ModelConverged": bool(model.monitor_.converged),
-        "TrainLogLikelihood": float(model.score(X_scaled)),
+        "ModelConverged": bool(result.mle_retvals.get("converged", False)),
+        "TrainLogLikelihood": float(result.llf),
         "BullStateTrainMeanReturn": float(state_means.loc[bull_state, "stoxx_return"]),
         "BearStateTrainMeanReturn": float(state_means.loc[bear_state, "stoxx_return"]),
         "TransitionStateTrainMeanReturn": float(state_means.loc[transition_state, "stoxx_return"]),
@@ -230,8 +214,8 @@ def fit_predict_month_end_regime(train_df, features):
     }
 
 
-def select_train_window(hmm_df, source_date):
-    full_train_df = hmm_df.loc[:source_date].copy()
+def select_train_window(msr_df, source_date):
+    full_train_df = msr_df.loc[:source_date].copy()
     if WINDOW_MODE == "expanding":
         return full_train_df
     if WINDOW_MODE == "rolling":
@@ -241,8 +225,8 @@ def select_train_window(hmm_df, source_date):
     )
 
 
-def build_no_lookahead_monthly_regimes(hmm_df, features):
-    month_end_obs = get_month_end_observation_dates(hmm_df)
+def build_no_lookahead_monthly_regimes(msr_df, features):
+    month_end_obs = get_month_end_observation_dates(msr_df)
     rows = []
 
     total_month_ends = len(month_end_obs)
@@ -251,7 +235,7 @@ def build_no_lookahead_monthly_regimes(hmm_df, features):
     for position, (month_end_raw, source_date_raw) in enumerate(month_end_pairs, start=1):
         month_end = pd.Timestamp(month_end_raw)
         source_date = pd.Timestamp(source_date_raw)
-        train_df = select_train_window(hmm_df, source_date)
+        train_df = select_train_window(msr_df, source_date)
 
         if len(train_df) < MIN_TRAIN_OBS:
             continue
@@ -259,7 +243,7 @@ def build_no_lookahead_monthly_regimes(hmm_df, features):
         try:
             pred = fit_predict_month_end_regime(train_df, features)
         except Exception as exc:
-            print(f"HMM fit epaonnistui kuukaudelle {month_end.date()} (source {source_date.date()}): {exc}")
+            print(f"MSR fit epaonnistui kuukaudelle {month_end.date()} (source {source_date.date()}): {exc}")
             continue
 
         rows.append(
@@ -277,7 +261,7 @@ def build_no_lookahead_monthly_regimes(hmm_df, features):
 
         if position % 12 == 0 or position == total_month_ends:
             print(
-                f"No-lookahead HMM: {position}/{total_month_ends} month-endia kasitelty "
+                f"No-lookahead MSR: {position}/{total_month_ends} month-endia kasitelty "
                 f"(viimeisin {month_end.strftime('%Y-%m')})"
             )
 
@@ -285,7 +269,7 @@ def build_no_lookahead_monthly_regimes(hmm_df, features):
     if monthly.empty:
         return monthly
 
-    monthly["RegimeLabel"] = monthly["HMM_Regime"].map(REGIME_LABELS)
+    monthly["RegimeLabel"] = monthly["MSR_Regime"].map(REGIME_LABELS)
     monthly["NextMonthDate"] = monthly["Date"] + pd.offsets.MonthEnd(1)
     monthly = monthly.sort_values("Date").reset_index(drop=True)
     return monthly
@@ -302,21 +286,21 @@ def build_ml_safe_monthly_regimes(monthly):
     return ml[lead_cols + other_cols].sort_values("Date").reset_index(drop=True)
 
 
-def plot_month_end_feature_regimes(hmm_df, stoxx_price, monthly, output_path: Path):
+def plot_month_end_feature_regimes(msr_df, stoxx_price, monthly, output_path: Path):
     monthly_plot = monthly.set_index("SourceDate").sort_index()
     fig, axes = plt.subplots(4, 1, figsize=(16, 12), sharex=True)
 
     series_specs = [
         ("STOXX 600", stoxx_price, axes[0]),
-        ("VSTOXX", hmm_df["vstoxx"], axes[1]),
-        ("Term Spread (10Y-2Y)", hmm_df["term_spread"], axes[2]),
-        ("Sovereign Spread (All-AAA)", hmm_df["credit_spread"], axes[3]),
+        ("VSTOXX", msr_df["vstoxx"], axes[1]),
+        ("Term Spread (10Y-2Y)", msr_df["term_spread"], axes[2]),
+        ("Sovereign Spread (All-AAA)", msr_df["credit_spread"], axes[3]),
     ]
 
     for label, full_series, axis in series_specs:
         axis.plot(full_series.index, full_series.values, color="lightgray", linewidth=0.9)
         for regime_id, color in REGIME_COLORS.items():
-            mask = monthly_plot["HMM_Regime"] == regime_id
+            mask = monthly_plot["MSR_Regime"] == regime_id
             axis.scatter(
                 monthly_plot.index[mask],
                 full_series.reindex(monthly_plot.index[mask]),
@@ -328,7 +312,7 @@ def plot_month_end_feature_regimes(hmm_df, stoxx_price, monthly, output_path: Pa
         axis.set_ylabel(label)
 
     axes[0].legend(loc="upper left", markerscale=1.3)
-    axes[0].set_title("No-Lookahead HMM Month-End Regimes")
+    axes[0].set_title("No-Lookahead MSR Month-End Regimes (Hamilton 1989)")
     axes[-1].set_xlabel("Date")
     fig.tight_layout()
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -361,7 +345,7 @@ def plot_monthly_regime_probabilities(monthly, output_path: Path):
     ax.set_ylim(-0.02, 1.02)
     ax.set_ylabel("Probability")
     ax.set_xlabel("Date")
-    ax.set_title(f"No-Lookahead HMM Month-End Regime Probabilities ({POSTERIOR_MEAN_WINDOW_DAYS}D Mean)")
+    ax.set_title(f"No-Lookahead MSR Month-End Regime Probabilities ({POSTERIOR_MEAN_WINDOW_DAYS}D Mean)")
     ax.legend(loc="upper left")
     ax.grid(alpha=0.2)
     fig.tight_layout()
@@ -383,7 +367,7 @@ def main():
         raise ValueError("ROLLING_WINDOW_OBS tulee olla >= MIN_TRAIN_OBS rolling-tilassa.")
 
     print(
-        "Building no-lookahead HMM monthly regimes "
+        "Building no-lookahead MSR monthly regimes "
         f"with {WINDOW_MODE} window from {START_DATE} to {END_DATE} "
         f"(min train obs={MIN_TRAIN_OBS}, posterior mean window={POSTERIOR_MEAN_WINDOW_DAYS}d)"
     )
@@ -393,12 +377,12 @@ def main():
     rd.open_session()
     try:
         df_equity, df_yields, df_credit = fetch_input_data(START_DATE, END_DATE)
-        hmm_df, features, stoxx_price = build_feature_matrix(df_equity, df_yields, df_credit)
+        msr_df, features, stoxx_price = build_feature_matrix(df_equity, df_yields, df_credit)
 
-        print(f"Feature matrix: {len(hmm_df)} daily observations")
-        print(f"Date range: {hmm_df.index.min().date()} — {hmm_df.index.max().date()}")
+        print(f"Feature matrix: {len(msr_df)} daily observations")
+        print(f"Date range: {msr_df.index.min().date()} — {msr_df.index.max().date()}")
 
-        monthly = build_no_lookahead_monthly_regimes(hmm_df, features)
+        monthly = build_no_lookahead_monthly_regimes(msr_df, features)
         if monthly.empty:
             raise RuntimeError("No-lookahead monthly regime table jaa tyhjaksi.")
 
@@ -406,7 +390,7 @@ def main():
 
         monthly.to_csv(MONTHLY_OUTPUT_PATH, index=False)
         monthly_ml.to_csv(MONTHLY_ML_OUTPUT_PATH, index=False)
-        plot_month_end_feature_regimes(hmm_df, stoxx_price, monthly, FEATURE_PLOT_PATH)
+        plot_month_end_feature_regimes(msr_df, stoxx_price, monthly, FEATURE_PLOT_PATH)
         plot_monthly_regime_probabilities(monthly, PROBABILITY_PLOT_PATH)
 
         print(f"\nSaved: {MONTHLY_OUTPUT_PATH}")
@@ -419,7 +403,7 @@ def main():
             f"{monthly['Date'].max().strftime('%Y-%m')}"
         )
         print("\nRegime distribution:")
-        print(monthly["HMM_Regime"].value_counts().rename(
+        print(monthly["MSR_Regime"].value_counts().rename(
             {0: "Bull (0)", 1: "Bear (1)", 2: "Transition (2)"}
         ).sort_index())
         print("\nHead:")
