@@ -40,6 +40,8 @@ Käyttöohje ja muistilappu repon `.py`-tiedostoista. Mitä kukin tekee, mitä f
 │   scripts/merge_jm2_to_master.py        →  PIT_MASTER_DF_1_JM2.csv         │
 │   scripts/build_production_master.py    →  MASTER_DF_PROD_JM2_nonnan_      │
 │       --winsorize-stock-continuous          winsor.csv                     │
+│   scripts/fix_index_pb_outliers.py      →  MASTER_DF_PROD_JM2_nonnan_      │
+│       (Index_B/M data quality fix)          winsor_fixed.csv               │
 └────────────────────────────────────────────────────────────────────────────┘
                               ↓
 ┌────────────────────────────────────────────────────────────────────────────┐
@@ -58,6 +60,7 @@ python scripts/updated_main_test.py
 python scripts/PIT_universe.py
 python scripts/merge_jm2_to_master.py --master data/02_preprocessed/PIT_MASTER_DF_1.csv
 python scripts/build_production_master.py --winsorize-stock-continuous
+python scripts/fix_index_pb_outliers.py
 python scripts/run_prediction.py
 ```
 
@@ -272,8 +275,13 @@ Mergeaa CJM-regiimi-todennäköisyydet masteriin.
 
 Tukee linja-malleja (OLS, Ridge, LASSO), gradient boostingia (LightGBM, XGBoost), feedforward-NN:ää (3-kerroksinen, IC loss) ja näiden ensembliä. Kaksivaiheinen walk-forward (Phase 1: kiinteät train+val Hyperparametrien valintaan; Phase 2: expanding-window kuukausittainen refit OOS-ennusteille). Sisältää myös portfolion rakennuksen ja arviointitestit (Clark-West, Diebold-Mariano).
 
-Input: `data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor.csv`.
+Input: `data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor_fixed.csv` (ks. `scripts/fix_index_pb_outliers.py` alla — ajetaan ennen tätä).
 Outputs: `results/predictions_oos.csv`, `ic_timeseries.csv`, `portfolio_returns.csv`, `metrics.csv`, `portfolio_performance.csv`, `clark_west.csv`, `diebold_mariano.csv`, `decile_returns.csv`, `decile_monotonicity.csv`, `turnover.csv`.
+
+### `scripts/fix_index_pb_outliers.py`
+Data-laadun korjaus: korvaa rikkinäiset `Index_B/M`-arvot tuotantopaneelissa omalla MktCap-painotetulla harmonisella aggregaatilla (`ΣMktCap / Σ(MktCap × 1/P/B)`) konsumoiden universumin osakkeiden 1/P/B + log_MktCap -sarakkeet. Triggeröityy Refinitivin `TR.Index_PRICE_TO_BOOK_RTRS`-kentän ~0.0001 placeholder-arvoista (havaittu 2026-Q1 alkaen — Refinitivin laskenta-engine-bugi, fresh fetch ei korjaa). Idempotentti: ei tee mitään, jos rikkinäisiä kuukausia ei ole. Output: `MASTER_DF_PROD_JM2_nonnan_winsor_fixed.csv` (alkuperäinen säilyy).
+
+Käyttö: `python scripts/fix_index_pb_outliers.py` (ennen `run_prediction.py`:tä).
 
 ### `scripts/run_sentiment_experiment.py`
 Sentiment pipelinen vaihe 3: kolmen mallivariantin (A: ei sentimentiä, B: news_dummy, C: täysi sentimentti) vertailu OOS-ikkunassa. Pooled OLS + Newey-West HAC -regressio kertoo, parantaako sentimentti suorituskykyä yli pelkän uutiskattavuuden.

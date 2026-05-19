@@ -110,7 +110,10 @@ python scripts/merge_jm2_to_master.py --master data/02_preprocessed/PIT_MASTER_D
 python scripts/build_production_master.py --winsorize-stock-continuous
                                                # → MASTER_DF_PROD_JM2_nonnan_winsor.csv
 
-# 5. ML walk-forward + portfolio (LightGBM / XGBoost / NN / ensemble)
+# 5. Data quality fix (replaces broken Refinitiv Index_B/M placeholders)
+python scripts/fix_index_pb_outliers.py        # → MASTER_DF_PROD_JM2_nonnan_winsor_fixed.csv
+
+# 6. ML walk-forward + portfolio (LightGBM / XGBoost / NN / ensemble)
 python scripts/run_prediction.py               # → results/*_prod_jm2_winsor_xgb_hpo.csv
 ```
 

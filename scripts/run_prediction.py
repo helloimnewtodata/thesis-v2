@@ -14,7 +14,7 @@ Usage
 
 Data
 ----
-    data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor.csv
+    data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor_fixed.csv
     ~102,884 rows × 33 cols | 2010-01-31 → 2026-03-31 | 194 months
 
 Models
@@ -104,7 +104,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # Paths
 # ============================================================
 
-DATA_PATH    = Path("data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor.csv")
+DATA_PATH    = Path("data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor_fixed.csv")
 RESULTS_DIR  = Path("results")
 
 # ============================================================

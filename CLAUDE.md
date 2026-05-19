@@ -71,6 +71,7 @@ The project follows a separation between **library code** (`src/`) and **CLI ent
 | `run_prediction.py` | **Stage 4 — ML walk-forward + portfolio.** Replaces the old `src/models.py` + `src/portfolio.py` pair (now archived). Linear baselines + LightGBM/XGBoost/NN + ensemble. Two-phase walk-forward. Also computes Clark-West, Diebold-Mariano, decile monotonicity, turnover, net-of-cost Sharpe |
 | `run_sentiment_experiment.py` | Sentiment pipelinen vaihe 3 (A/B/C-ablaation vertailu) |
 | `fetch_ecb_cache.py` | One-shot ECB yield-curve downloader. Wraps `src.ecb_cache_utils.get_ecb_series` |
+| `fix_index_pb_outliers.py` | **Data quality fix** — replaces Refinitiv's broken `Index_Calculated Price to Book` placeholder values (~0.0001) with a MktCap-weighted harmonic aggregate of constituent P/B values. Writes `MASTER_DF_PROD_JM2_nonnan_winsor_fixed.csv`. **Must be run before `run_prediction.py`** whenever new months are fetched; idempotent (no-op if no broken months). Triggered: Refinitiv's `TR.Index_PRICE_TO_BOOK_RTRS` returns ~0.0001 for recent months (observed since 2026-Q1) — likely engine bug, fresh fetch does not fix it |
 
 ### `diagnostics/`, `experiments/`, `archive/`
 
@@ -78,6 +79,7 @@ The project follows a separation between **library code** (`src/`) and **CLI ent
 |---|---|
 | `diagnostics/beta_idiosync_diagnostics.py` | Beta_252d / -IdioVol NaN diagnostics |
 | `diagnostics/check_stoxxr.py` | `.STOXXR` index availability check |
+| `diagnostics/index_features_audit.py` | Re-fetch Refinitiv's three raw `Index_Calculated*` fields and compare to `MASTER_DF_1.csv`. Reports outliers, NaNs, and per-month diffs. Useful before any OOS extension or as a sanity check |
 | `diagnostics/point_in_time_smoke_test.py` | Small PIT smoke test (random sample, fast turnaround) |
 | `experiments/xgb_walkforward_hpo.py` | XGBoost HPO grid/random search |
 | `experiments/regime_benchmarks/regime_strategy_benchmark_all.py` | Vertaa HMM/HMM2/HMM3/GMM/JM/JM2/CJM "1−P(Bear)"-timing-strategiassa |
@@ -91,7 +93,7 @@ The project follows a separation between **library code** (`src/`) and **CLI ent
 - **Phase 2** (expanding-window OOS): for each month in `[OOS_START, OOS_END]`, retrain on all data up to t−1 with Phase-1 hyperparameters, predict month t cross-section
 - **Target:** next-month excess return (shifted by −1 per stock)
 - **Models:** OLS / Ridge / LASSO (linear), LightGBM / XGBoost (tree), 3-layer feedforward NN (IC loss), equal-weight ensemble of LGBM + XGB + NN
-- **Inputs:** `data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor.csv`
+- **Inputs:** `data/02_preprocessed/MASTER_DF_PROD_JM2_nonnan_winsor_fixed.csv` (run `scripts/fix_index_pb_outliers.py` first if file does not exist or new months have been added)
 - **Outputs:** `results/predictions_oos*.csv`, `portfolio_returns*.csv`, `portfolio_performance*.csv`, `metrics*.csv`, `clark_west*.csv`, `diebold_mariano*.csv`, `decile_returns*.csv`, `turnover*.csv`
 
 ## Data Specifications
