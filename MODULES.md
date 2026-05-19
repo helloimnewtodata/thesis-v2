@@ -156,7 +156,7 @@ Per-stock feature-rakennus. Sisältää valuaatio-, laatu-, momentum-, riski- ja
 | `compute_dividend_yield_trailing(df)` | Trailing 12kk osingot / edellinen kuukausilopun hinta (`merge_asof`). |
 | **Laatu** | |
 | `compute_neg_debt_to_mktcap(df)` | `-(Total Debt / Market Cap)`. |
-| `compute_book_to_market(df)` | Common Equity / Market Cap. |
+| `compute_book_to_market(df)` | Common Equity / Market Cap. (Lasketaan välipaneeliin, mutta `scripts/build_production_master.py` jättää sen oletuksena pois tuotantopaneelista redundanssin takia `1/P/B`:n kanssa.) |
 | `compute_operating_profitability(df)` | EBITDA / lagged Common Equity (Fama-French 2015). |
 | **Momentum** | |
 | `compute_mom_1m(df)` | 1kk total return. |
@@ -173,7 +173,7 @@ Per-stock feature-rakennus. Sisältää valuaatio-, laatu-, momentum-, riski- ja
 | `compute_index_features(df_index_fundamentals)` | Indeksin valuaatio-/momentum-featuret. |
 | **Standalone** | |
 | `compute_log_market_cap(df)` | `log(Market Cap)`. |
-| `compute_sector_dummies(df, sectors, names)` | One-hot-sektoridummiet (Cnsmr, Manuf, HiTec, Hlth). |
+| `compute_sector_dummies(df, sectors, names)` | 5 binääristä Sector_Group-dummia GICS 11 → 6 -aggregaation pohjalta: `Sector_Financials`, `Sector_Industrials_Materials`, `Sector_Consumer`, `Sector_Health_Care`, `Sector_Technology_Communication`. Referenssikategoria: Real Assets & Utilities (Energy + Utilities + Real Estate). `sectors`/`names`-parametrit hyväksytään yhteensopivuuden takia mutta jätetään huomiotta — dummit luetaan aina `_SECTOR_DUMMY_GROUPS`-listasta. |
 | `compute_excess_return(df, df_euribor)` | Stock return − 3kk EURIBOR (kuukausitettu). |
 | **Orkestrointi** | |
 | `compute_all_features(...)` | Kutsuu kaikki yllä olevat oikeassa järjestyksessä → täysi feature-paneeli. |
@@ -186,7 +186,7 @@ Hurst-eksponentti DFA-menetelmällä, rinnakkaistettu per stock.
 | `_compute_hurst_dfa(returns, min_obs)` | Yhden stockin yhden ikkunan DFA-Hurst (`antropy.detrended_fluctuation`). |
 | `_rank_normalize(feature_df)` | Cross-sectional rank → arvo välille [−1, 1]. |
 | `_process_stock(stock, wide_returns, month_ends, window, min_obs)` | Kuukausilopuissa rolling-Hurst per stock. |
-| `compute_hurst_dfa(daily_df, window=252, min_obs=252, n_jobs=-1)` | Pääentry: rinnakkaistettu Hurst koko paneelille → raw + ranked. |
+| `compute_hurst_dfa(daily_df, window=252, min_obs=252, n_jobs=-1)` | Pääentry: rinnakkaistettu Hurst koko paneelille → kaksi saraketta, `Hurst_Raw_DFA` (raakaarvo `(0, 1)`) ja `Hurst` (cross-sectional rank `[−1, +1]`). Tuotantopaneelista jätetään oletuksena raw pois — vain ranked päätyy `MASTER_DF_PROD_JM2_*.csv`:hen. |
 
 ### `src/HMM.py`
 No-lookahead Gaussian HMM -regiimiluokittelija (Bull / Bear / Transition). Tuotantokäytössä. Output: `data/01_raw/outputs/hmm_regimes_monthly_no_lookahead_ml.csv`. Ajetaan `python -m src.HMM`.

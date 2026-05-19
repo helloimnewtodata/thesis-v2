@@ -112,10 +112,10 @@ Features are fed directly into models (no composite aggregation in the current p
 | Group | Production features in master CSV |
 |---|---|
 | Valuation | `E/P_ff` (fallback chain: LTM EPSfr → 4Q TTM EPSfr → TTM NI/Shares), `1/P/B` (daily ratio), `-P/S` (daily ratio), `-P/CF_ff` (fallback chain: LTM operating CF → 4Q TTM operating CF → 4Q TTM operating CF per share), `DivYield_12M` (trailing 12M actual dividends / prior month-end price, `merge_asof`) |
-| Quality | `OperatingProfitability` (EBITDA / lagged Common Equity, Fama-French 2015), `BookToMarket`, `-Debt/MktCap` (in-house from Total Debt / Market Cap) |
-| Momentum | `MOM_1M`, `MOM_12M` (skip month t−1, Jegadeesh & Titman 1993), `RSI_30d`, `Hurst` (cross-sectional rank in [−1, 1]), `Hurst_Raw_DFA` (raw DFA in (0, 1)), `Stock_vs_Sector_1M`, `Stock_vs_Sector_12M_1M` (leave-one-out, Moskowitz & Grinblatt 1999) |
+| Quality | `OperatingProfitability` (EBITDA / lagged Common Equity, Fama-French 2015), `-Debt/MktCap` (in-house from Total Debt / Market Cap). **`BookToMarket` is intentionally dropped from the production master** — redundant with `1/P/B` (both proxy the same construct daily) |
+| Momentum | `MOM_1M`, `MOM_12M` (skip month t−1, Jegadeesh & Titman 1993), `RSI_30d`, `Hurst` (cross-sectional rank in [−1, 1]), `Stock_vs_Sector_1M`, `Stock_vs_Sector_12M_1M` (leave-one-out, Moskowitz & Grinblatt 1999). **`Hurst_Raw_DFA` is intentionally dropped from the production master** — only the cross-sectionally ranked `Hurst` is used |
 | Risk | `Vol_30d` / `-Vol_30d`, `Beta_252d` / `-Beta_252d` (vs. .STOXXR), `-IdioVol` (CAPM residual sd) |
-| Standalone | `log_MktCap` (size factor), `HMM_Regime` / JM2 / CJM regime probabilities (0=Bull, 1=Bear, 2=Transition; assigned per state by economic score), GICS sector dummies (Cnsmr, Manuf, HiTec, Hlth) |
+| Standalone | `log_MktCap` (size factor), regime probabilities (`Bull_Prob`, `Bear_Prob`, `Transition_Prob` — source model HMM / JM2 / CJM depending on which merge script was used; column names are stable). GICS sector dummies: `Sector_Financials`, `Sector_Industrials_Materials`, `Sector_Consumer`, `Sector_Health_Care`, `Sector_Technology_Communication` (5 dummies; Energy / Utilities / Real Estate left as baseline). Index features: `Index_E/P`, `Index_B/M`, `Index_Calculated Index Dividend Yield`, `Index_Index_MOM_1M`, `Index_Index_MOM_12M` |
 
 **Convention:** all valuation features in the master are oriented so that **higher = cheaper = buy signal** (E/P, 1/P/B, −P/S, −P/CF, DivYield).
 

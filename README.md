@@ -127,10 +127,10 @@ Cross-sectional features (master CSV columns, all oriented so **higher = cheaper
 | Group | Features |
 |---|---|
 | Valuation | `E/P_ff`, `1/P/B`, `-P/S`, `-P/CF_ff`, `DivYield_12M` |
-| Quality | `OperatingProfitability`, `BookToMarket`, `-Debt/MktCap` |
-| Momentum | `MOM_1M`, `MOM_12M`, `RSI_30d`, `Hurst`, `Stock_vs_Sector_1M`, `Stock_vs_Sector_12M_1M` |
+| Quality | `OperatingProfitability`, `-Debt/MktCap` (`BookToMarket` computed but excluded from production master — redundant with `1/P/B`) |
+| Momentum | `MOM_1M`, `MOM_12M`, `RSI_30d`, `Hurst` (cross-sectional rank in [−1, 1]; raw DFA value `Hurst_Raw_DFA` is computed but excluded from production master), `Stock_vs_Sector_1M`, `Stock_vs_Sector_12M_1M` |
 | Risk | `-Vol_30d`, `-Beta_252d`, `-IdioVol` |
-| Standalone | `log_MktCap`, `HMM_Regime` (or JM2 / CJM regime probabilities), GICS sector dummies (Cnsmr, Manuf, HiTec, Hlth) |
+| Standalone | `log_MktCap`; regime probabilities `Bull_Prob` / `Bear_Prob` / `Transition_Prob` (sourced from HMM or JM2 / CJM depending on merge script); 5 GICS-group sector dummies (`Sector_Financials`, `Sector_Industrials_Materials`, `Sector_Consumer`, `Sector_Health_Care`, `Sector_Technology_Communication`; reference category = Energy / Utilities / Real Estate); 5 index features (`Index_E/P`, `Index_B/M`, `Index_Calculated Index Dividend Yield`, `Index_Index_MOM_1M`, `Index_Index_MOM_12M`) |
 
 `E/P_ff` and `-P/CF_ff` use a fallback chain: Refinitiv LTM → in-house 4Q rolling TTM from quarterly reports → NI/Shares (or operating-CF/per-share) fallback. No look-ahead bias (`merge_asof(direction="backward")`).
 
